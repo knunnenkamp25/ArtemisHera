@@ -1,0 +1,65 @@
+/* =========================================================================
+   ArtemisHera — news & web scrapes
+   Scrapes run in GitHub Actions (scripts/news_scraper.py); results are
+   committed to data/news/{project_id}.json and indexed in data/projects.json.
+   The landing page renders that JSON — same model as the news-dashboard.
+   ========================================================================= */
+
+const News = {
+  async launchScrape({ projectName, urls = [], sheetUrl = '', days = 2, maxArticles = 50 }) {
+    const projectId = 'scr-' + uid();
+    await GH.dispatchScrape({
+      project_id: projectId,
+      project_name: projectName,
+      urls: urls.join('\n'),
+      sheet_url: sheetUrl,
+      days: String(days),
+      max_articles: String(maxArticles),
+    });
+    // Track locally right away so it shows as "running" in Projects
+    Store.saveProject({
+      id: projectId,
+      name: projectName,
+      type: urls.length ? 'web-scrape' : 'news-scrape',
+      status: 'running',
+      subject: urls.length ? urls.map(u => u.replace(/^https?:\/\//, '').split('/')[0]).join(', ') : 'Google Sheet site list',
+      summary: urls.length ? `${urls.length} page${urls.length > 1 ? 's' : ''} queued` : 'Full site-list scrape queued',
+    });
+    return projectId;
+  },
+
+  async fetchResults(projectId) {
+    // Try the deployed Pages copy first, then raw.github (fresher after commit)
+    const paths = [
+      `data/news/${projectId}.json?t=${Date.now()}`,
+      `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/data/news/${projectId}.json?t=${Date.now()}`,
+    ];
+    for (const p of paths) {
+      try {
+        const resp = await fetch(p);
+        if (resp.ok) return await resp.json();
+      } catch (e) { /* next */ }
+    }
+    return null;
+  },
+
+  async refreshRunStatus() {
+    // Reconcile locally-tracked "running" scrape projects against Actions runs
+    const running = Store._index().filter(p => p.status === 'running' && (p.type === 'news-scrape' || p.type === 'web-scrape'));
+    if (!running.length || !GH.getToken()) return;
+    const runs = await GH.recentRuns();
+    for (const proj of running) {
+      const run = runs.find(r => (r.name || '').includes(proj.id) || (r.display_title || '').includes(proj.id));
+      if (run) {
+        if (run.status === 'completed') {
+          proj.status = run.conclusion === 'success' ? 'complete' : 'failed';
+          Store.saveProject(proj);
+        }
+      } else {
+        // No matching run and results exist → completed before we ever polled
+        const data = await this.fetchResults(proj.id);
+        if (data) { proj.status = 'complete'; Store.saveProject(proj); }
+      }
+    }
+  },
+};

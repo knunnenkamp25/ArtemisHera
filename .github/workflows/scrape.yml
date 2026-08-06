@@ -1,0 +1,104 @@
+name: ArtemisHera Scraper
+run-name: "Scrape: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID (assigned by the app)'
+        required: true
+      project_name:
+        description: 'Human-readable project name'
+        required: true
+      urls:
+        description: 'Newline-separated list of URLs (manual web scrape, max 5)'
+        required: false
+        default: ''
+      sheet_url:
+        description: 'Google Sheet URL with site list (news scrape mode)'
+        required: false
+        default: ''
+      days:
+        description: 'Look-back days (0 = bulk scrape)'
+        required: false
+        default: '2'
+      max_articles:
+        description: 'Max articles per site'
+        required: false
+        default: '50'
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 cloudscraper openpyxl lxml
+
+      - name: Run scraper
+        env:
+          URLS: ${{ inputs.urls }}
+          SHEET: ${{ inputs.sheet_url }}
+          DAYS: ${{ inputs.days }}
+          MAXA: ${{ inputs.max_articles }}
+          PID: ${{ inputs.project_id }}
+        run: |
+          mkdir -p data/news
+          ARGS="--export-json data/news/${PID}.json --max-articles ${MAXA} -o /tmp/${PID}.xlsx"
+          if [ "${DAYS}" != "0" ]; then ARGS="$ARGS --today --days ${DAYS}"; fi
+          if [ -n "${URLS}" ]; then
+            echo "${URLS}" | head -5 > /tmp/urls.txt
+            python scripts/news_scraper.py -f /tmp/urls.txt $ARGS
+          elif [ -n "${SHEET}" ]; then
+            python scripts/news_scraper.py --sheet "${SHEET}" $ARGS
+          else
+            echo "No URLs or sheet provided" && exit 1
+          fi
+
+      - name: Update project manifest
+        env:
+          PID: ${{ inputs.project_id }}
+          PNAME: ${{ inputs.project_name }}
+          URLS: ${{ inputs.urls }}
+        run: |
+          python - <<'EOF'
+          import json, os, datetime
+          pid = os.environ['PID']; pname = os.environ['PNAME']; urls = os.environ.get('URLS','').strip()
+          path = 'data/projects.json'
+          try:
+              projects = json.load(open(path))
+          except Exception:
+              projects = []
+          try:
+              result = json.load(open(f'data/news/{pid}.json'))
+              count = result.get('meta', {}).get('total', len(result.get('articles', [])))
+          except Exception:
+              count = 0
+          now = datetime.datetime.utcnow().isoformat() + 'Z'
+          projects = [p for p in projects if p.get('id') != pid]
+          projects.insert(0, {
+              'id': pid, 'name': pname,
+              'type': 'web-scrape' if urls else 'news-scrape',
+              'status': 'complete', 'subject': 'Cloud scrape',
+              'summary': f'{count} articles collected',
+              'created': now, 'updated': now,
+          })
+          json.dump(projects, open(path, 'w'), indent=2)
+          EOF
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No changes" || git commit -m "Scrape results: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
+          git pull --rebase origin main || true
+          git push
