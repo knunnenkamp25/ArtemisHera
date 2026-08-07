@@ -23,10 +23,13 @@ const CONFIG = {
   // only so a dead host doesn't double every timeout. The server-side scripts
   // still try both.
   VOTEVIEW_URLS: ['https://voteview.com/static/data/out'],
-  // State legislature data lives in THIS repo (packed format, same-origin).
-  // Historical sessions through 2025 are committed; current year comes from
-  // the state-votes workflow (LegiScan API).
-  STATE_DATA_BASE: 'data/state',
+  // State legislative data lives in a separate repo — a 50-state backfill blows
+  // past the 1 GB GitHub Pages site cap. raw.githubusercontent sends
+  // `access-control-allow-origin: *`, so this is a plain cross-origin fetch with
+  // no proxy. Set STATE_DATA_LOCAL to prefer an in-repo copy (dev, or a small
+  // committed subset) and fall back to the data repo when a session is missing.
+  STATE_DATA_BASE: 'https://raw.githubusercontent.com/knunnenkamp25/ArtemisHera-data/main/data/state',
+  STATE_DATA_LOCAL: 'data/state',
 };
 
 const CAST_CODES = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};

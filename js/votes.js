@@ -136,10 +136,19 @@ const Votes = {
   // rollcalls.json holds each rollcall once, votes.json maps people_id to
   // [rollcall index, vote code] pairs, and keywords are derived at load time.
   // Same-origin fetches — no external site, no CORS proxies.
+  // Try a local in-repo copy first (instant, same-origin), then the data repo.
+  // Keeps dev and any committed subset working without a config change.
   async _stateFetch(path) {
-    const resp = await fetch(`${CONFIG.STATE_DATA_BASE}/${path}`);
-    if (!resp.ok) throw new Error(`State data missing: ${path} (${resp.status})`);
-    return resp.json();
+    const bases = [CONFIG.STATE_DATA_LOCAL, CONFIG.STATE_DATA_BASE].filter(Boolean);
+    let lastStatus = 0;
+    for (const base of bases) {
+      try {
+        const resp = await fetch(`${base}/${path}`);
+        if (resp.ok) return resp.json();
+        lastStatus = resp.status;
+      } catch (e) { lastStatus = lastStatus || 'network error'; }
+    }
+    throw new Error(`State data unavailable: ${path} (${lastStatus})`);
   },
 
   async loadStateSessions() {
