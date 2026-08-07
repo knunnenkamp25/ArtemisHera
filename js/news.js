@@ -6,13 +6,13 @@
    ========================================================================= */
 
 const News = {
-  async launchScrape({ projectName, urls = [], sheetUrl = '', days = 2, maxArticles = 50 }) {
+  async launchScrape({ projectName, urls = [], mode = 'web', geography = '', stance = 'oppose', days = 2, maxArticles = 50 }) {
     const projectId = 'scr-' + uid();
     await GH.dispatchScrape({
       project_id: projectId,
       project_name: projectName,
       urls: urls.join('\n'),
-      sheet_url: sheetUrl,
+      mode,
       days: String(days),
       max_articles: String(maxArticles),
     });
@@ -20,10 +20,13 @@ const News = {
     Store.saveProject({
       id: projectId,
       name: projectName,
-      type: urls.length ? 'web-scrape' : 'news-scrape',
+      type: mode === 'news' ? 'news-scrape' : 'web-scrape',
+      stance,
       status: 'running',
-      subject: urls.length ? urls.map(u => u.replace(/^https?:\/\//, '').split('/')[0]).join(', ') : 'Google Sheet site list',
-      summary: urls.length ? `${urls.length} page${urls.length > 1 ? 's' : ''} queued` : 'Full site-list scrape queued',
+      subject: mode === 'news' ? geography : urls.map(u => u.replace(/^https?:\/\//, '').split('/')[0]).join(', '),
+      summary: mode === 'news'
+        ? `${urls.length} outlets · ${geography}`
+        : `${urls.length} page${urls.length > 1 ? 's' : ''} queued`,
     });
     return projectId;
   },

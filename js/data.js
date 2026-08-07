@@ -23,8 +23,10 @@ const CONFIG = {
   // only so a dead host doesn't double every timeout. The server-side scripts
   // still try both.
   VOTEVIEW_URLS: ['https://voteview.com/static/data/out'],
-  // Pre-scraped state legislature data lives in the congress-votes repo
-  STATE_DATA_BASE: 'https://raw.githubusercontent.com/knunnenkamp25/congress-votes/main/state_data',
+  // State legislature data lives in THIS repo (packed format, same-origin).
+  // Historical sessions through 2025 are committed; current year comes from
+  // the state-votes workflow (LegiScan API).
+  STATE_DATA_BASE: 'data/state',
 };
 
 const CAST_CODES = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};
@@ -224,8 +226,4 @@ const HERA_CHANNELS = [
   { id:'ads',    name:'Digital Ads',    icon:'◨' },
 ];
 
-const HERA_PHASES = [
-  { id:'define',  name:'Phase 1 — Define',  desc:'Introduce the narrative frame and soften the target with the broadest, highest-severity hits.' },
-  { id:'drive',   name:'Phase 2 — Drive',   desc:'Sustained multi-channel pressure. Rotate issue-specific hits against their matched universes.' },
-  { id:'close',   name:'Phase 3 — Close',   desc:'Sharpen to the two strongest contrasts. High frequency, GOTV integration, persuasion-to-mobilization handoff.' },
-];
+

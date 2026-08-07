@@ -14,9 +14,13 @@ const Report = {
   },
 
   /* ══════════════════ OPPO / ATTACK REPORT ══════════════════ */
+  // Stance flips the frame: opposing = attack extraction; supporting = the
+  // same hits presented as a vulnerability audit (what we must inoculate
+  // against before the other side finds it).
   renderOppo(meta, payload) {
     const attacks = payload.attacks || [];
     this.state = { attacks, filtered: [...attacks], sortCol: 'number', sortAsc: true, page: 1, activeUniverse: '', meta };
+    const support = meta.stance === 'support';
 
     const total = attacks.length;
     const sev = s => attacks.filter(a => a.severity === s).length;
@@ -26,12 +30,14 @@ const Report = {
 
     $('#view').innerHTML = `
       ${this.crumbs(meta.name)}
-      <h1 class="page-title">${esc(meta.subject || meta.name)} — Attack Extraction</h1>
-      <div class="page-sub">${esc(meta.summary || '')} · Generated ${fmtDate(meta.updated)}</div>
+      <h1 class="page-title">${esc(meta.subject || meta.name)} — ${support ? 'Vulnerability Audit' : 'Attack Extraction'}</h1>
+      <div class="page-sub"><span class="stance-tag ${support ? 'support' : 'oppose'}">${support ? '▲ Supporting' : '▼ Opposing'}</span>
+        &nbsp;${esc(meta.summary || '')} · Generated ${fmtDate(meta.updated)}</div>
+      ${support ? `<div class="notice"><b>Reading this as their playbook:</b> every line below is an attack the other side can run against ${esc(meta.subject || 'your candidate')}. Severity = exposure. Universes = the audiences that attack would move — your inoculation targets.</div>` : ''}
 
       <div class="stats">
-        <div class="stat"><div class="lbl">Total Attacks</div><div class="val gold">${total}</div></div>
-        <div class="stat"><div class="lbl">Major</div><div class="val major">${sev('Major')}</div></div>
+        <div class="stat"><div class="lbl">${support ? 'Vulnerabilities' : 'Total Attacks'}</div><div class="val gold">${total}</div></div>
+        <div class="stat"><div class="lbl">${support ? 'Critical Exposure' : 'Major'}</div><div class="val major">${sev('Major')}</div></div>
         <div class="stat"><div class="lbl">Moderate</div><div class="val moderate">${sev('Moderate')}</div></div>
         <div class="stat"><div class="lbl">Minor</div><div class="val minor">${sev('Minor')}</div></div>
         <div class="stat"><div class="lbl">Niche</div><div class="val niche">${sev('Niche')}</div></div>
@@ -64,7 +70,8 @@ const Report = {
       </div>
       <div class="filterbar" id="rp-pager"></div>
 
-      <div class="section-h"><h2>Universe Coverage</h2><span class="hint">${universes.length} universes matched — click to filter</span></div>
+      <div class="section-h"><h2>${support ? 'Audiences at Risk' : 'Universe Coverage'}</h2>
+        <span class="hint">${universes.length} universes ${support ? 'exposed' : 'matched'} — click to filter</span></div>
       <div class="chipgrid" id="rp-unigrid"></div>`;
 
     // wire controls
@@ -206,8 +213,12 @@ const Report = {
       <h1 class="page-title">${esc(member.name)}</h1>
       <div class="page-sub">
         <span class="tag ${partyCls}">${esc(member.party || '')}</span>
+        <span class="stance-tag ${meta.stance === 'support' ? 'support' : 'oppose'}">${meta.stance === 'support' ? '▲ Supporting' : '▼ Opposing'}</span>
         &nbsp;${esc(member.state || member.district || '')} · ${esc(meta.summary || '')} · Generated ${fmtDate(meta.updated)}
       </div>
+      ${meta.stance === 'support'
+        ? '<div class="notice"><b>Support read:</b> universes below are where this record is an asset to tout — or a liability to inoculate. High-Yes rows on popular issues are persuasion gold; check Weak/Mixed rows before leaning on them.</div>'
+        : ''}
 
       <div class="stats">
         <div class="stat"><div class="lbl">Votes Loaded</div><div class="val gold">${votes.length}</div></div>

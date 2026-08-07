@@ -1,0 +1,14 @@
+{
+  "VA": {
+    "state_name": "Virginia",
+    "sessions": [
+      {
+        "id": "2025",
+        "name": "2025 Regular Session",
+        "year_start": 2025,
+        "year_end": 2025,
+        "people_count": 142
+      }
+    ]
+  }
+}

@@ -132,36 +132,50 @@ const Votes = {
   },
 
   // ── State pipeline ─────────────────────────────────────────────────────
+  // Historical sessions live in this repo (data/state/…) in packed form:
+  // rollcalls.json holds each rollcall once, votes.json maps people_id to
+  // [rollcall index, vote code] pairs, and keywords are derived at load time.
+  // Same-origin fetches — no external site, no CORS proxies.
+  async _stateFetch(path) {
+    const resp = await fetch(`${CONFIG.STATE_DATA_BASE}/${path}`);
+    if (!resp.ok) throw new Error(`State data missing: ${path} (${resp.status})`);
+    return resp.json();
+  },
+
   async loadStateSessions() {
     if (this.stateSessions) return this.stateSessions;
-    const resp = await smartFetch(`${CONFIG.STATE_DATA_BASE}/sessions.json`);
-    this.stateSessions = await resp.json();
+    this.stateSessions = await this._stateFetch('sessions.json');
     return this.stateSessions;
   },
 
   async loadStateMembers(state, session) {
-    const resp = await smartFetch(`${CONFIG.STATE_DATA_BASE}/${state}/${session}/people.json`);
-    this.stateMembers = await resp.json();
+    this.stateMembers = await this._stateFetch(`${state}/${session}/people.json`);
     return this.stateMembers;
   },
 
+  VOTE_CODES: { 1: 'Yes', 2: 'No', 3: 'Present', 4: 'Not Voting' },
+
   async loadStateVotes(state, session, person) {
-    const resp = await smartFetch(`${CONFIG.STATE_DATA_BASE}/${state}/${session}/${person.people_id}.json`);
-    const raw = await resp.json();
-    const votes = Array.isArray(raw) ? raw : (raw.votes || []);
-    return votes.map(v => ({
-      date: v.date || '',
-      congress: session,
-      chamber: v.chamber || '',
-      bill_number: v.bill_number || '',
-      description: v.bill_title || '',
-      question: v.vote_question || '',
-      result: v.vote_result || '',
-      member_vote: v.member_vote || '',
-      keywords: typeof v.keywords === 'string'
-        ? v.keywords.split(';').map(k => k.trim()).filter(Boolean)
-        : (v.keywords || extractKeywords((v.bill_number || '') + ' ' + (v.bill_title || ''))),
-    })).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const [rollcalls, votes] = await Promise.all([
+      this._stateFetch(`${state}/${session}/rollcalls.json`),
+      this._stateFetch(`${state}/${session}/votes.json`),
+    ]);
+    const mine = votes[String(person.people_id)] || [];
+    return mine.map(([idx, code]) => {
+      const rc = rollcalls[idx] || [];
+      const [bill_number, title, date, question, result, chamber] = rc;
+      return {
+        date: date || '',
+        congress: session,
+        chamber: chamber || '',
+        bill_number: bill_number || '',
+        description: title || '',
+        question: question || '',
+        result: result || '',
+        member_vote: this.VOTE_CODES[code] || 'Other',
+        keywords: extractKeywords((bill_number || '') + ' ' + (title || '')),
+      };
+    }).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   },
 
   // ── Analysis: universe topic matching + keyword aggregation ────────────

@@ -76,6 +76,7 @@ button { font-family: var(--font); }
 .brand .wordmark .i { font-size: 9.5px; letter-spacing: .52em; color: var(--tan); margin-top: 3px; }
 .brand .app-divider { width: 1px; height: 26px; background: rgba(206,192,171,.28); margin: 0 4px 0 10px; }
 .brand .app-name { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--sand); }
+.brand .app-sep { width: 1px; height: 14px; background: rgba(206,192,171,.45); margin: 0 7px; }
 
 .nav { display: flex; gap: 4px; margin-left: auto; }
 .nav a {
@@ -266,6 +267,19 @@ tbody tr.alt:hover { background: var(--butter); }
 .chip.kw { background: var(--card); }
 .chip.kw.hot { border-color: var(--amber); color: var(--amber); }
 
+/* ── Stance toggle (Support / Oppose) ─────────────────────────────────── */
+.stance-toggle { display: inline-flex; border: 1.5px solid var(--line); border-radius: 8px; overflow: hidden; }
+.stance-toggle button {
+  border: none; background: var(--card); color: var(--bark); padding: 9px 20px;
+  font-size: 13px; font-weight: 700; letter-spacing: .06em; cursor: pointer; display: flex; align-items: center; gap: 7px;
+}
+.stance-toggle button + button { border-left: 1.5px solid var(--line); }
+.stance-toggle button.on.support { background: var(--pine); color: var(--cream); }
+.stance-toggle button.on.oppose { background: var(--sev-major); color: #F7E4BA; }
+.stance-tag { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.stance-tag.support { background: rgba(46,73,57,.12); color: var(--pine); border: 1px solid rgba(46,73,57,.3); }
+.stance-tag.oppose { background: rgba(140,58,43,.12); color: var(--sev-major); border: 1px solid rgba(140,58,43,.3); }
+
 .section-h { display: flex; align-items: baseline; gap: 12px; margin: 34px 0 12px; }
 .section-h h2 { font-size: 19px; }
 .section-h .hint { font-size: 12.5px; color: var(--bark); }
@@ -359,15 +373,34 @@ tbody tr.alt:hover { background: var(--butter); }
 .phone { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
 .bubble { background: var(--mint); color: var(--ink); border-radius: 14px 14px 14px 4px; padding: 10px 14px; font-size: 13.5px; max-width: 92%; }
 
-/* ad concepts */
-.ad-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
-.ad-mock { border-radius: 10px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow); }
-.ad-canvas { aspect-ratio: 1 / 1; display: flex; flex-direction: column; justify-content: space-between; padding: 22px; }
-.ad-canvas.banner { aspect-ratio: 8 / 3; }
-.ad-canvas .kicker { font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; opacity: .85; }
-.ad-canvas .headline { font-size: 21px; font-weight: 700; line-height: 1.2; }
-.ad-canvas .cta { align-self: flex-start; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; padding: 7px 14px; border-radius: 4px; }
-.ad-meta { padding: 10px 14px; font-size: 12px; color: var(--bark); background: var(--card); border-top: 1px solid var(--line); }
+/* ── Ad concepts: platform-true mockups ───────────────────────────────── */
+.ad-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 20px; align-items: start; }
+.ad-mock { border-radius: 10px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow); background: #fff; }
+.ad-meta { padding: 12px 14px; font-size: 12px; color: var(--bark); background: var(--card); border-top: 1px solid var(--line); }
+
+/* platform chrome */
+.fbpost, .xpost { background: #fff; font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+.fb-head, .x-head { display: flex; gap: 9px; align-items: center; padding: 10px 12px 8px; font-size: 13px; color: #1c1e21; }
+.fb-pfp { width: 38px; height: 38px; border-radius: 50%; background: var(--pine); color: var(--gold); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: 0 0 auto; }
+.fb-sub { color: #65676b; font-size: 11.5px; }
+.fb-copy, .x-copy { padding: 0 12px 9px; font-size: 13.5px; color: #1c1e21; white-space: pre-wrap; }
+.fb-bar { display: flex; justify-content: space-around; padding: 8px 0; border-top: 1px solid #e4e6eb; color: #65676b; font-size: 12.5px; }
+.xpost .adx-canvas { border-radius: 14px; margin: 0 12px 12px; overflow: hidden; }
+
+/* the creative itself (exports to PNG) */
+.adx-canvas { width: 100%; display: flex; flex-direction: column; overflow: hidden; font-family: var(--font); }
+.adx-half { flex: 1; padding: 7% 8% 4%; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+.adx-lbl { font-size: 11px; font-weight: 800; letter-spacing: .26em; }
+.adx-line { font-size: 15px; font-weight: 600; line-height: 1.3; }
+.adx-big { font-size: 19px; font-weight: 700; }
+.adx-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4.5% 6%; font-size: 10.5px; line-height: 1.35; }
+.adx-cta { flex: 0 0 auto; font-size: 10.5px; letter-spacing: .14em; font-weight: 800; padding: 8px 14px; border-radius: 4px; white-space: nowrap; }
+.adx-quotewrap { flex: 1; padding: 8% 9% 4%; display: flex; flex-direction: column; justify-content: center; }
+.adx-kicker { font-size: 11px; font-weight: 800; letter-spacing: .3em; }
+.adx-qmark { font-size: 64px; line-height: .7; margin: 12px 0 2px; font-family: Georgia, serif; }
+.adx-cite { margin-top: 14px; padding-left: 12px; border-left: 3px solid; font-size: 11px; opacity: .8; line-height: 1.4; }
+.adx-sun { font-size: 18px; }
+.adx-bannerwrap { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 3% 4%; }
 
 /* press release */
 .presswrap { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 40px 48px; max-width: 820px; font-size: 14px; }

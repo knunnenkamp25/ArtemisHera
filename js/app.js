@@ -35,7 +35,7 @@ const App = {
       { id: 'state', title: 'Scrape State Votes', desc: 'Search state legislators from the pre-scraped LegiScan library and analyze their voting record against targeting universes.', icon: g('<path d="M4 20 L4 10 L12 4 L20 10 L20 20"/><path d="M9 20 V14 H15 V20"/>') },
       { id: 'oppo', title: 'Upload Oppo Book', desc: 'Feed in an opposition research book (PDF/DOCX) — or a Poseidon attacks.json — and get the full attack-extraction dashboard with severity and universe matching.', icon: g('<path d="M5 4 H17 L19 6 V20 H5 Z"/><path d="M8 9 H16 M8 12.5 H16 M8 16 H13"/>') },
       { id: 'docs', title: 'Upload Documents', desc: 'Analyze any document — mailers, transcripts, filings, reports. Extracts significant keywords and maps them to voter universes.', icon: g('<path d="M4 5 H20 V19 H4 Z"/><path d="M7 9 H17 M7 12 H17 M7 15 H12"/>') },
-      { id: 'news', title: 'Begin News Scrape', desc: 'Launch the automated news pipeline against your Google Sheet site list. Runs in the cloud; results land on a live intelligence page.', icon: g('<path d="M4 4 H16 V20 H4 Z"/><path d="M16 8 H20 V20 H16"/><path d="M7 8 H13 M7 11.5 H13 M7 15 H13"/>') },
+      { id: 'news', title: 'Begin News Scrape', desc: 'Pick a state or DMA and scrape every local outlet in it — 3,140 sites built in. Runs in the cloud; results land on a live intelligence page.', icon: g('<path d="M4 4 H16 V20 H4 Z"/><path d="M16 8 H20 V20 H16"/><path d="M7 8 H13 M7 11.5 H13 M7 15 H13"/>') },
       { id: 'web', title: 'Scrape Web Pages', desc: `Manually enter up to ${CONFIG.MAX_MANUAL_URLS} specific pages or sites to scrape and analyze — one-off targets outside your standing site list.`, icon: g('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12 H20.5 M12 3.5 C15 7 15 17 12 20.5 C9 17 9 7 12 3.5"/>') },
     ];
     $('#view').innerHTML = `
@@ -54,6 +54,7 @@ const App = {
 
   /* ── Setup pages ────────────────────────────────────────────────────── */
   setup(kind) {
+    setTimeout(() => this.wireStance(), 0);
     switch (kind) {
       case 'federal': return this.setupFederal();
       case 'state': return this.setupState();
@@ -70,11 +71,32 @@ const App = {
       <h1 class="page-title">${esc(title)}</h1><div class="page-sub">${esc(sub)}</div>`;
   },
 
+  // ── Stance: every project is FOR someone or AGAINST someone ──────────
+  // The choice flows through report framing and everything Hera generates.
+  stanceControl(defaultStance = 'oppose') {
+    return `
+      <label class="fld">Our Position on the Subject</label>
+      <div class="stance-toggle" id="stance-toggle" data-stance="${defaultStance}">
+        <button type="button" class="support ${defaultStance === 'support' ? 'on' : ''}" data-s="support">▲ Supporting</button>
+        <button type="button" class="oppose ${defaultStance === 'oppose' ? 'on' : ''}" data-s="oppose">▼ Opposing</button>
+      </div>`;
+  },
+  wireStance() {
+    const el = $('#stance-toggle');
+    if (!el) return;
+    $$('#stance-toggle button').forEach(b => b.onclick = () => {
+      el.dataset.stance = b.dataset.s;
+      $$('#stance-toggle button').forEach(x => x.classList.toggle('on', x === b));
+    });
+  },
+  stance() { return $('#stance-toggle')?.dataset.stance || 'oppose'; },
+
   /* Federal votes */
   async setupFederal() {
     $('#view').innerHTML = `
       ${this.header('Scrape Federal Votes', 'Search any member of Congress, choose the chambers and congresses to load, then run the scrape.')}
       <div class="card panel">
+        ${this.stanceControl()}
         <label class="fld">Member Search</label>
         <div class="dd-wrap">
           <input type="search" id="fv-search" placeholder="Start typing a name… (e.g. Spanberger)" autocomplete="off" disabled>
@@ -145,7 +167,7 @@ const App = {
         $('#fv-fill').style.width = '100%';
         const models = await loadUniverses();
         const meta = Store.saveProject({
-          id: 'fed-' + uid(), name: `${selected.name} — Federal Votes`, type: 'federal-votes',
+          id: 'fed-' + uid(), name: `${selected.name} — Federal Votes`, type: 'federal-votes', stance: this.stance(),
           status: 'complete', subject: selected.name,
           summary: `${votes.length} votes · Congress ${from}–${to}${votes.partial ? ' (partial)' : ''}`,
         }, {
@@ -199,6 +221,7 @@ const App = {
     $('#view').innerHTML = `
       ${this.header('Scrape State Votes', 'Pick a state, session, and legislator from the pre-scraped LegiScan library.')}
       <div class="card panel">
+        ${this.stanceControl()}
         <div class="row">
           <div style="width:220px"><label class="fld">State</label><select id="sv-state"><option>Loading…</option></select></div>
           <div style="width:260px"><label class="fld">Session</label><select id="sv-session"></select></div>
@@ -250,7 +273,7 @@ const App = {
         const topics = Votes.matchVotesToTopics(votes, models);
         const keywords = Votes.analyzeKeywords(votes, models);
         const meta = Store.saveProject({
-          id: 'st-' + uid(), name: `${person.name} — ${st} Votes`, type: 'state-votes',
+          id: 'st-' + uid(), name: `${person.name} — ${st} Votes`, type: 'state-votes', stance: this.stance(),
           status: 'complete', subject: person.name,
           summary: `${votes.length} votes · ${sessions[st].state_name} ${se}`,
         }, { member: { name: person.name, party: person.party, state: st, district: person.district }, votes, topics, keywords });
@@ -270,7 +293,7 @@ const App = {
         isOppo ? 'PDF or DOCX oppo research book — or import a Poseidon attacks.json for full-fidelity results.'
                : 'Any PDF, DOCX or TXT — extracts significant keywords and maps them to voter universes.')}
       <div class="card panel">
-        ${isOppo ? `<label class="fld">Subject Name</label>
+        ${isOppo ? `${this.stanceControl()}<label class="fld">Subject Name</label>
         <input type="text" id="up-subject" placeholder="e.g. Jane Smith" style="max-width:380px">` : ''}
         <label class="fld">Document</label>
         <div class="dropzone" id="up-zone">
@@ -317,7 +340,7 @@ const App = {
             if (!attacks.length) throw new Error('No attack-signal sentences found — is this an oppo research document?');
           }
           const meta = Store.saveProject({
-            id: 'op-' + uid(), name: `${subject} — Oppo Extraction`, type: 'oppo-book',
+            id: 'op-' + uid(), name: `${subject} — ${this.stance() === 'support' ? 'Vulnerability Audit' : 'Oppo Extraction'}`, type: 'oppo-book', stance: this.stance(),
             status: 'complete', subject,
             summary: `${attacks.length} attacks · ${file.name}`,
           }, { attacks, source: file.name });
@@ -326,7 +349,7 @@ const App = {
           onStatus('Analyzing keywords…', 0.9);
           const keywords = Docs.analyzeDocument(text, universes);
           const meta = Store.saveProject({
-            id: 'doc-' + uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'documents',
+            id: 'doc-' + uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'documents', stance: this.stance(),
             status: 'complete', subject: file.name,
             summary: `${keywords.length} keywords · ${file.name}`,
           }, { keywords, wordCount: text.split(/\s+/).length, source: file.name });
@@ -339,33 +362,95 @@ const App = {
     };
   },
 
-  /* News scrape (site list from Google Sheet) */
-  setupNews() {
+  /* News scrape — geography picker over the internal site inventory */
+  async setupNews() {
     $('#view').innerHTML = `
-      ${this.header('Begin News Scrape', 'Launches the cloud scraper (GitHub Actions) against your Google Sheet site list. Results appear on a live landing page when the run finishes (~15–25 min for a full list).')}
+      ${this.header('Begin News Scrape', 'Pick a geography and the cloud scraper covers every outlet in it from the internal inventory (3,140 local outlets, all 50 states + DC, joined to Nielsen DMAs). Results land on a live landing page when the run finishes.')}
       <div class="card panel">
+        ${this.stanceControl()}
         <label class="fld">Project Name</label>
-        <input type="text" id="ns-name" placeholder="e.g. Virginia News — August" style="max-width:420px">
-        <label class="fld">Google Sheet URL (site list — column A = URLs)</label>
-        <input type="text" id="ns-sheet" placeholder="https://docs.google.com/spreadsheets/d/…  (shared: Anyone with the link)">
+        <input type="text" id="ns-name" placeholder="e.g. Richmond Media Watch" style="max-width:420px">
         <div class="row" style="margin-top:4px">
+          <div class="grow"><label class="fld">States</label>
+            <select id="ns-states" multiple size="9"></select></div>
+          <div class="grow"><label class="fld">DMAs <span style="text-transform:none;letter-spacing:0">(within chosen states — leave empty for all)</span></label>
+            <select id="ns-dmas" multiple size="9"></select></div>
+        </div>
+        <label class="fld">Outlet Types</label>
+        <div class="chipgrid" id="ns-types"></div>
+        <div class="row" style="margin-top:16px">
           <div style="width:170px"><label class="fld">Look-back Days</label>
             <select id="ns-days"><option>1</option><option selected>2</option><option>7</option><option>14</option><option value="0">All (bulk)</option></select></div>
           <div style="width:190px"><label class="fld">Max Articles / Site</label>
-            <select id="ns-max"><option>25</option><option selected>50</option><option>100</option></select></div>
-          <button class="btn gold" id="ns-run">Launch Scrape</button>
+            <select id="ns-max"><option selected>25</option><option>50</option><option>100</option></select></div>
+          <button class="btn gold" id="ns-run" disabled>Launch Scrape</button>
         </div>
         <div class="status" id="ns-status"></div>
+        <div class="notice" id="ns-count" style="display:none"></div>
         ${this.tokenNotice()}
       </div>`;
-    $('#ns-run').onclick = () => this.launchScrapeFlow({
-      projectName: $('#ns-name').value.trim() || 'News Scrape ' + new Date().toLocaleDateString(),
-      sheetUrl: $('#ns-sheet').value.trim(),
-      urls: [],
-      days: +$('#ns-days').value,
-      maxArticles: +$('#ns-max').value,
-      statusEl: '#ns-status',
+
+    let sites = [];
+    try {
+      sites = await (await fetch('data/news_sites.json')).json();
+    } catch (e) { return setStatus('#ns-status', 'Could not load the site inventory (data/news_sites.json).', 'err'); }
+
+    const states = [...new Set(sites.map(s => s.state))].sort();
+    $('#ns-states').innerHTML = states.map(s => `<option value="${s}">${s} (${sites.filter(x => x.state === s).length})</option>`).join('');
+    const types = [...new Set(sites.map(s => s.type))].filter(Boolean).sort();
+    const activeTypes = new Set(types);   // all on by default
+    $('#ns-types').innerHTML = types.map(t =>
+      `<span class="chip active" data-t="${esc(t)}">${esc(t)} <span class="n">${sites.filter(s => s.type === t).length}</span></span>`).join('');
+
+    const selected = () => {
+      const stSel = [...$('#ns-states').selectedOptions].map(o => o.value);
+      const dmaSel = [...$('#ns-dmas').selectedOptions].map(o => o.value);
+      let pool = sites.filter(s => stSel.includes(s.state) && activeTypes.has(s.type));
+      if (dmaSel.length) {
+        // outlets in the chosen DMAs, plus statewide outlets (no DMA) of chosen states
+        pool = pool.filter(s => dmaSel.includes(s.dma) || !s.dma);
+      }
+      return { pool, stSel, dmaSel };
+    };
+
+    const refresh = () => {
+      const { pool, stSel } = selected();
+      // DMA options follow the state selection
+      const dmas = [...new Set(sites.filter(s => stSel.includes(s.state) && s.dma).map(s => s.dma))].sort();
+      const keep = new Set([...$('#ns-dmas').selectedOptions].map(o => o.value));
+      $('#ns-dmas').innerHTML = dmas.map(d => `<option value="${esc(d)}" ${keep.has(d) ? 'selected' : ''}>${esc(d)}</option>`).join('');
+      const n = pool.length;
+      $('#ns-run').disabled = n === 0;
+      const mins = Math.max(2, Math.round(n * 25 / 60));
+      $('#ns-count').style.display = n ? 'block' : 'none';
+      $('#ns-count').innerHTML = `<b>${n} outlets selected.</b> Estimated run: ~${mins} minutes.` +
+        (n > 200 ? ' <span style="color:var(--sev-major)">That\'s a large run — consider narrowing by DMA or type.</span>' : '');
+    };
+
+    $('#ns-states').onchange = refresh;
+    $('#ns-dmas').onchange = () => { const { pool } = selected(); $('#ns-run').disabled = !pool.length; refresh(); };
+    $$('#ns-types .chip').forEach(ch => ch.onclick = () => {
+      const t = ch.dataset.t;
+      if (activeTypes.has(t)) { activeTypes.delete(t); ch.classList.remove('active'); }
+      else { activeTypes.add(t); ch.classList.add('active'); }
+      refresh();
     });
+
+    $('#ns-run').onclick = () => {
+      const { pool, stSel, dmaSel } = selected();
+      if (!pool.length) return;
+      const geo = dmaSel.length ? dmaSel.join(' + ') : stSel.join(', ');
+      this.launchScrapeFlow({
+        projectName: $('#ns-name').value.trim() || `${geo} News — ${new Date().toLocaleDateString()}`,
+        urls: pool.map(s => s.url),
+        stance: this.stance(),
+        mode: 'news',
+        geography: geo,
+        days: +$('#ns-days').value,
+        maxArticles: +$('#ns-max').value,
+        statusEl: '#ns-status',
+      });
+    };
   },
 
   /* Manual web-page scrape (max 5 URLs) */
@@ -374,6 +459,7 @@ const App = {
     $('#view').innerHTML = `
       ${this.header('Scrape Web Pages', `Enter up to ${N} specific sites or pages. The cloud scraper pulls their articles/content and builds an intelligence page.`)}
       <div class="card panel">
+        ${this.stanceControl()}
         <label class="fld">Project Name</label>
         <input type="text" id="ws-name" placeholder="e.g. Opponent Site Watch" style="max-width:420px">
         <label class="fld">Page URLs (one per line, max ${N})</label>
@@ -394,7 +480,7 @@ const App = {
       if (bad) return setStatus('#ws-status', 'Not a valid URL: ' + bad, 'err');
       this.launchScrapeFlow({
         projectName: $('#ws-name').value.trim() || 'Web Scrape ' + new Date().toLocaleDateString(),
-        urls, sheetUrl: '', days: 0, maxArticles: +$('#ws-max').value,
+        urls, mode: 'web', stance: this.stance(), days: 0, maxArticles: +$('#ws-max').value,
         statusEl: '#ws-status',
       });
     };

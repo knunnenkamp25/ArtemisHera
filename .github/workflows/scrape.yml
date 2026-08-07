@@ -11,13 +11,12 @@ on:
         description: 'Human-readable project name'
         required: true
       urls:
-        description: 'Newline-separated list of URLs (manual web scrape, max 5)'
+        description: 'Newline-separated list of URLs to scrape'
+        required: true
+      mode:
+        description: 'news (geography selection, no cap) or web (manual pages, capped at 5)'
         required: false
-        default: ''
-      sheet_url:
-        description: 'Google Sheet URL with site list (news scrape mode)'
-        required: false
-        default: ''
+        default: 'web'
       days:
         description: 'Look-back days (0 = bulk scrape)'
         required: false
@@ -46,7 +45,7 @@ jobs:
       - name: Run scraper
         env:
           URLS: ${{ inputs.urls }}
-          SHEET: ${{ inputs.sheet_url }}
+          MODE: ${{ inputs.mode }}
           DAYS: ${{ inputs.days }}
           MAXA: ${{ inputs.max_articles }}
           PID: ${{ inputs.project_id }}
@@ -54,24 +53,24 @@ jobs:
           mkdir -p data/news
           ARGS="--export-json data/news/${PID}.json --max-articles ${MAXA} -o /tmp/${PID}.xlsx"
           if [ "${DAYS}" != "0" ]; then ARGS="$ARGS --today --days ${DAYS}"; fi
-          if [ -n "${URLS}" ]; then
-            echo "${URLS}" | head -5 > /tmp/urls.txt
-            python scripts/news_scraper.py -f /tmp/urls.txt $ARGS
-          elif [ -n "${SHEET}" ]; then
-            python scripts/news_scraper.py --sheet "${SHEET}" $ARGS
+          if [ -z "${URLS}" ]; then echo "No URLs provided" && exit 1; fi
+          if [ "${MODE}" = "web" ]; then
+            echo "${URLS}" | head -5 > /tmp/urls.txt   # manual page scrape stays capped
           else
-            echo "No URLs or sheet provided" && exit 1
+            echo "${URLS}" > /tmp/urls.txt             # geography selection: full list
           fi
+          echo "Scraping $(grep -c . /tmp/urls.txt) sites (mode=${MODE})"
+          python scripts/news_scraper.py -f /tmp/urls.txt $ARGS
 
       - name: Update project manifest
         env:
           PID: ${{ inputs.project_id }}
           PNAME: ${{ inputs.project_name }}
-          URLS: ${{ inputs.urls }}
+          MODE: ${{ inputs.mode }}
         run: |
           python - <<'EOF'
           import json, os, datetime
-          pid = os.environ['PID']; pname = os.environ['PNAME']; urls = os.environ.get('URLS','').strip()
+          pid = os.environ['PID']; pname = os.environ['PNAME']; mode = os.environ.get('MODE','web')
           path = 'data/projects.json'
           try:
               projects = json.load(open(path))
@@ -86,7 +85,7 @@ jobs:
           projects = [p for p in projects if p.get('id') != pid]
           projects.insert(0, {
               'id': pid, 'name': pname,
-              'type': 'web-scrape' if urls else 'news-scrape',
+              'type': 'news-scrape' if mode == 'news' else 'web-scrape',
               'status': 'complete', 'subject': 'Cloud scrape',
               'summary': f'{count} articles collected',
               'created': now, 'updated': now,

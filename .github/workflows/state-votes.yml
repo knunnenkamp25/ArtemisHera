@@ -1,0 +1,66 @@
+name: ArtemisHera State Votes
+run-name: "State votes: ${{ inputs.state || 'scheduled refresh' }} ${{ inputs.year || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'State abbreviation (e.g. VA)'
+        required: true
+      year:
+        description: 'Year to fetch (ignored if backfill is true)'
+        required: false
+        default: ''
+      backfill:
+        description: 'Fetch ALL available sessions for the state'
+        required: false
+        default: 'false'
+
+  schedule:
+    # Weekly current-year refresh for every state already in data/state/
+    - cron: '0 7 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  votes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch requested session(s)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          LEGISCAN_KEY: ${{ secrets.LEGISCAN_KEY }}
+        run: |
+          if [ "${{ inputs.backfill }}" = "true" ]; then
+            python scripts/fetch_state_votes.py --state "${{ inputs.state }}" --all-years
+          else
+            YEAR="${{ inputs.year }}"
+            [ -z "$YEAR" ] && YEAR=$(date +%Y)
+            python scripts/fetch_state_votes.py --state "${{ inputs.state }}" --year "$YEAR"
+          fi
+
+      - name: Scheduled current-year refresh
+        if: github.event_name == 'schedule'
+        env:
+          LEGISCAN_KEY: ${{ secrets.LEGISCAN_KEY }}
+        run: |
+          YEAR=$(date +%Y)
+          for st in $(ls data/state | grep -E '^[A-Z]{2}$'); do
+            echo "=== $st $YEAR ==="
+            python scripts/fetch_state_votes.py --state "$st" --year "$YEAR" || echo "skip $st"
+          done
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/state
+          git diff --staged --quiet && echo "No changes" || git commit -m "State votes update: ${{ inputs.state || 'scheduled' }} ${{ inputs.year || '' }}"
+          git pull --rebase origin main || true
+          git push

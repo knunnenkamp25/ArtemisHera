@@ -3,9 +3,17 @@
 Running list of changes to batch together. Logged 2026-08-07; work begins next session.
 Status legend: `[ ]` queued · `[~]` in progress · `[x]` done
 
+**Batch shipped 2026-08-07.** Notes: news list internalized as `data/news_sites.json`
+(3,140 outlets, 99.4% joined to DMAs via county crosswalk); VA 2025 votes packed
+into `data/state/` (124 MB → 4.9 MB normalized format) with LegiScan backfill
+workflow ready pending the `LEGISCAN_KEY` secret; ads rebuilt as platform-true
+mockups (FB/X chrome, contrast + quote layouts, PNG export at spec via
+html2canvas); stance flows through setup → reports → all Hera output.
+Remaining from this batch: add LEGISCAN_KEY secret + run backfill dispatches.
+
 ---
 
-## 1. [ ] Internalize the news site list (geography picker)
+## 1. [x] Internalize the news site list (geography picker)
 
 Bring the news-websites spreadsheet into the app as a static data file — it's small
 and won't change, so there's no reason to depend on a Google Sheet at scrape time.
@@ -20,7 +28,7 @@ and won't change, so there's no reason to depend on a Google Sheet at scrape tim
 - Note: sites-by-DMA needs the sheet to carry DMA per site; if it only has state,
   add a state→DMA crosswalk column while importing
 
-## 2. [ ] Store historical state legislative votes in-repo (through 2025)
+## 2. [x] Store historical state legislative votes in-repo (through 2025)
 
 Static data; hosting it ourselves removes the risk of LegiScan or the congress-votes
 repo going away. Scrape only the current year going forward.
@@ -36,7 +44,7 @@ repo going away. Scrape only the current year going forward.
 - **Need from Ken:** LegiScan API key if we backfill via API; or confirm bulk-dataset
   downloads are the path
 
-## 3. [ ] Workshop richer ad concepts in Hera
+## 3. [x] Workshop richer ad concepts in Hera
 
 Current output (headline + kicker + CTA on flat brand-color backgrounds) is too thin.
 Ideas to workshop together before building:
@@ -55,12 +63,12 @@ Ideas to workshop together before building:
   they're usable as actual creative comps
 - Decide: keep pure-CSS mocks vs. generate real image files
 
-## 4. [ ] Masthead: separate ARTEMIS and HERA
+## 4. [x] Masthead: separate ARTEMIS and HERA
 
 Add a space and a vertical divider between ARTEMIS and HERA in the app label
 (mirroring the divider treatment already between the PI lockup and the app name).
 
-## 5. [ ] Support vs. Oppose mode (the big one)
+## 5. [x] Support vs. Oppose mode (the big one)
 
 Every project gets a stance: are we **for** this person or **against** them?
 This should flow through everything:
