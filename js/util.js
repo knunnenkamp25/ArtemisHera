@@ -81,6 +81,94 @@ function extractKeywords(text) {
   return [...new Set(words)];
 }
 
+// ── Match rules: the user-trained layer ────────────────────────────────────
+// Pins add a keyword to a universe (always counted as strong evidence); bans
+// remove one. Rules persist in this browser and can be exported as
+// data/match_rules.json so cloud runs learn the same corrections.
+const MatchRules = {
+  KEY: 'artemishera.match_rules',
+
+  load() {
+    try {
+      const r = JSON.parse(localStorage.getItem(this.KEY)) || {};
+      return { pins: r.pins || [], bans: r.bans || [] };
+    } catch (e) { return { pins: [], bans: [] }; }
+  },
+  save(rules) {
+    localStorage.setItem(this.KEY, JSON.stringify(rules));
+    this._cache = null;
+  },
+
+  _cache: null,
+  _index() {
+    if (this._cache) return this._cache;
+    const rules = this.load();
+    const pins = new Map(), bans = new Map();
+    for (const p of rules.pins) {
+      if (!pins.has(p.universe)) pins.set(p.universe, []);
+      pins.get(p.universe).push(p.kw.toLowerCase());
+    }
+    for (const b of rules.bans) {
+      if (!bans.has(b.universe)) bans.set(b.universe, new Set());
+      bans.get(b.universe).add(b.kw.toLowerCase());
+    }
+    this._cache = { pins, bans };
+    return this._cache;
+  },
+
+  apply(universe, patterns) {
+    const { pins, bans } = this._index();
+    let out = patterns;
+    const banned = bans.get(universe);
+    if (banned) out = out.filter(p => !banned.has(p.toLowerCase()));
+    const pinned = pins.get(universe);
+    if (pinned) out = [...out, ...pinned.filter(p => !out.includes(p))];
+    return out;
+  },
+
+  isPinned(universe, kw) {
+    return (this._index().pins.get(universe) || []).includes(kw.toLowerCase());
+  },
+
+  pin(kw, universe) {
+    const rules = this.load();
+    kw = kw.toLowerCase().trim();
+    rules.bans = rules.bans.filter(b => !(b.kw === kw && b.universe === universe));
+    if (!rules.pins.some(p => p.kw === kw && p.universe === universe)) rules.pins.push({ kw, universe });
+    this.save(rules);
+  },
+
+  ban(kw, universe) {
+    const rules = this.load();
+    kw = kw.toLowerCase().trim();
+    rules.pins = rules.pins.filter(p => !(p.kw === kw && p.universe === universe));
+    if (!rules.bans.some(b => b.kw === kw && b.universe === universe)) rules.bans.push({ kw, universe });
+    this.save(rules);
+  },
+
+  remove(type, kw, universe) {
+    const rules = this.load();
+    rules[type] = rules[type].filter(r => !(r.kw === kw && r.universe === universe));
+    this.save(rules);
+  },
+
+  count() { const r = this.load(); return r.pins.length + r.bans.length; },
+
+  export() {
+    downloadFile('match_rules.json', JSON.stringify(this.load(), null, 2), 'application/json');
+  },
+  import(obj) {
+    if (!obj || (!Array.isArray(obj.pins) && !Array.isArray(obj.bans))) throw new Error('Not a match_rules file.');
+    this.save({ pins: obj.pins || [], bans: obj.bans || [] });
+  },
+};
+
+// Pins always count as strong evidence — the user said so explicitly.
+function effectiveStrength(universe, pattern) {
+  if (typeof MatchRules !== 'undefined' && MatchRules.isPinned(universe, pattern)) return 'strong';
+  return patternStrength(pattern);
+}
+
 // ── Tiered universe matching (primary / secondary / tertiary) ──────────────
 function scoreModelMatch(kwLower, universe) {
   const patterns = universePatterns(universe);
@@ -131,19 +219,25 @@ function matchKeywordToUniverse(keyword, index) {
   return bestScore >= 0.5 ? { universe: best, score: bestScore } : null;
 }
 
-// Rank the N best universes for a block of free text (used by oppo extraction)
+// Rank the N best universes for a block of free text (used by oppo extraction
+// and document analysis). Scoring follows the same evidence rule as votes:
+// strong pattern hits are worth 2, weak ones 1, a full-name appearance 2 —
+// and a universe needs a score of 2 to qualify at all. This is what stops a
+// lone generic word ("reform") from dragging in an unrelated universe.
 function matchTextToUniverses(text, index, n = 3) {
-  const kws = extractKeywords(text);
+  const low = ' ' + (text || '').toLowerCase() + ' ';
   const scores = new Map();
-  for (const kw of kws) {
-    for (const variant of wordVariants(kw)) {
-      for (const u of index) {
-        let s = 0;
-        if (u.tokens.has(variant)) s = 0.9;
-        else if (u.norm.includes(variant) && variant.length >= 4) s = 0.6;
-        if (s) scores.set(u.name, (scores.get(u.name) || 0) + s);
-      }
+  for (const u of index) {
+    let score = 0;
+    const seenStems = new Set();
+    for (const p of universePatterns(u.name)) {
+      const stem = p.trim().slice(0, 4);
+      if (seenStems.has(stem) || !patternHit(low, p)) continue;
+      seenStems.add(stem);
+      score += effectiveStrength(u.name, p) === 'strong' ? 2 : 1;
     }
+    if (u.norm.length >= 6 && low.includes(u.norm)) score += 2;   // name itself appears
+    if (score >= 2) scores.set(u.name, score);
   }
   return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 }

@@ -510,7 +510,73 @@ const App = {
         <div id="uni-preview"></div>
       </div>
 
+      <div class="card panel" style="margin-top:18px">
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">Matching Rules</h2>
+          <span class="hint">your corrections — they persist and apply to every future run</span></div>
+        <p style="font-size:13.5px;color:var(--bark);max-width:760px">
+          <b>Pin</b> a keyword to make it strong evidence for a universe. <b>Ban</b> a keyword→universe pairing to kill a
+          bad match (the × on matched keywords in vote reports does this too). To make cloud vote runs use the same
+          rules, export this file and commit it to the repo as <code>data/match_rules.json</code>.
+        </p>
+        <div class="row" style="margin-top:6px">
+          <div style="width:130px"><label class="fld">Rule</label>
+            <select id="mr-type"><option value="pin">Pin</option><option value="ban">Ban</option></select></div>
+          <div class="grow"><label class="fld">Keyword or Phrase</label>
+            <input type="text" id="mr-kw" placeholder="e.g. school choice"></div>
+          <div class="grow"><label class="fld">Universe</label>
+            <select id="mr-uni"><option>Loading…</option></select></div>
+          <button class="btn" id="mr-add">Add Rule</button>
+        </div>
+        <div class="status" id="mr-status"></div>
+        <div id="mr-list" style="margin-top:10px"></div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn ghost sm" onclick="MatchRules.export()">Export match_rules.json</button>
+          <button class="btn ghost sm" id="mr-import">Import Rules</button>
+        </div>
       </div>`;
+
+    // ── Matching rules controls ──
+    const renderRules = () => {
+      const rules = MatchRules.load();
+      const rows = [
+        ...rules.pins.map(r => ({ ...r, type: 'pin' })),
+        ...rules.bans.map(r => ({ ...r, type: 'ban' })),
+      ];
+      $('#mr-list').innerHTML = rows.length
+        ? rows.map(r => `<div class="rule-row">
+            <span class="type ${r.type}">${r.type.toUpperCase()}</span>
+            <b>${esc(r.kw)}</b> <span style="color:var(--tan)">${r.type === 'pin' ? '→' : '↛'}</span> ${esc(r.universe)}
+            <span class="del" data-t="${r.type}s" data-k="${esc(r.kw)}" data-u="${esc(r.universe)}" title="Delete rule">✕</span>
+          </div>`).join('')
+        : '<p style="font-size:13px;color:var(--tan)">No rules yet. Ban bad matches from any vote report, or add rules here.</p>';
+      $$('#mr-list .del').forEach(el => el.onclick = () => {
+        MatchRules.remove(el.dataset.t, el.dataset.k, el.dataset.u);
+        renderRules();
+      });
+    };
+    renderRules();
+    loadUniverses().then(list => {
+      $('#mr-uni').innerHTML = list.map(u => `<option>${esc(u)}</option>`).join('');
+    });
+    $('#mr-add').onclick = () => {
+      const kw = $('#mr-kw').value.trim().toLowerCase();
+      const uni = $('#mr-uni').value;
+      if (!kw || kw.length < 3) return setStatus('#mr-status', 'Keyword must be at least 3 characters.', 'err');
+      if (!uni || uni === 'Loading…') return setStatus('#mr-status', 'Pick a universe.', 'err');
+      MatchRules[$('#mr-type').value](kw, uni);
+      $('#mr-kw').value = '';
+      setStatus('#mr-status', 'Rule saved ✓ — applies to every future analysis. Use ⟳ Re-match (oppo) or re-run a scrape to update an existing report.', 'ok');
+      renderRules();
+    };
+    $('#mr-import').onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = '.json';
+      input.onchange = async () => {
+        try { MatchRules.import(JSON.parse(await input.files[0].text())); renderRules(); setStatus('#mr-status', 'Rules imported ✓', 'ok'); }
+        catch (e) { setStatus('#mr-status', e.message, 'err'); }
+      };
+      input.click();
+    };
 
     const render = (msg, cls) => {
       $('#set-state').innerHTML = connected ? `

@@ -165,24 +165,37 @@ const Votes = {
   },
 
   // ── Analysis: universe topic matching + keyword aggregation ────────────
+  // Evidence rule: a vote matches a universe on ONE strong hit (multi-word
+  // phrase, anchor word, or user-pinned keyword) or TWO independent weak hits.
+  // A lone generic word is not enough — that's what made matching loose.
   matchVotesToTopics(voteRecords, universes) {
     const results = [];
     for (const model of universes) {
       const patterns = universePatterns(model);
       if (!patterns.length) continue;
-      let yes = 0, no = 0, other = 0;
+      let yes = 0, no = 0, other = 0, strongMatches = 0;
       const matchedKeywords = new Set();
       for (const v of voteRecords) {
         const hay = ((v.description || '') + ' ' + (v.keywords || []).join(' ')).toLowerCase();
-        const hit = patterns.find(p => patternHit(hay, p));
-        if (!hit) continue;
-        matchedKeywords.add(hit);
+        const hits = patterns.filter(p => patternHit(hay, p));
+        if (!hits.length) continue;
+        const strongHit = hits.find(p => effectiveStrength(model, p) === 'strong');
+        // Weak hits only count as independent evidence when they're different
+        // words — "child" + "children" is one signal, not two.
+        const weakStems = new Set(hits.filter(p => effectiveStrength(model, p) === 'weak').map(p => p.trim().slice(0, 4)));
+        if (!strongHit && weakStems.size < 2) continue;
+        if (strongHit) strongMatches++;
+        hits.slice(0, 3).forEach(h => matchedKeywords.add(h));
         if (v.member_vote === 'Yes') yes++;
         else if (v.member_vote === 'No') no++;
         else other++;
       }
       const total = yes + no + other;
-      if (total > 0) results.push({ model, total, yes, no, other, matchedKeywords: [...matchedKeywords] });
+      if (total > 0) results.push({
+        model, total, yes, no, other,
+        strongPct: Math.round((strongMatches / total) * 100),
+        matchedKeywords: [...matchedKeywords],
+      });
     }
     results.sort((a, b) => b.total - a.total);
     return results;

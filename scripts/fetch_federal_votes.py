@@ -70,7 +70,8 @@ def load_topic_keywords():
     Note: the server can't see a user's sheet override (it lives in browser
     localStorage), so cloud runs always match against the bundled list.
     """
-    src = open(os.path.join(os.path.dirname(__file__), '..', 'js', 'data.js')).read()
+    root = os.path.join(os.path.dirname(__file__), '..')
+    src = open(os.path.join(root, 'js', 'data.js')).read()
 
     block = src.split('const UNIVERSE_KEYWORDS = {', 1)[1].split('\n};', 1)[0]
     curated = {}
@@ -82,13 +83,48 @@ def load_topic_keywords():
     uni_block = src.split('const POSEIDON_UNIVERSES = [', 1)[1].split('];', 1)[0]
     universes = re.findall(r"'([^']+)'", uni_block)
 
+    anchor_block = src.split('const ANCHOR_WORDS = new Set([', 1)[1].split(']);', 1)[0]
+    global ANCHORS
+    ANCHORS = set(re.findall(r"'([^']+)'", anchor_block))
+
     topics = {}
     for name in universes:
         if name in curated:
-            topics[name] = curated[name]
+            topics[name] = list(curated[name])
         elif len(name) >= 6:
             topics[name] = [name.lower()]
+
+    # User-trained rules, committed to the repo from Settings → Export
+    global PINNED
+    PINNED = set()
+    rules_path = os.path.join(root, 'data', 'match_rules.json')
+    try:
+        rules = json.load(open(rules_path))
+        for b in rules.get('bans', []):
+            if b['universe'] in topics and b['kw'] in topics[b['universe']]:
+                topics[b['universe']].remove(b['kw'])
+        for p in rules.get('pins', []):
+            topics.setdefault(p['universe'], [])
+            if p['kw'] not in topics[p['universe']]:
+                topics[p['universe']].append(p['kw'])
+            PINNED.add((p['universe'], p['kw']))
+        n = len(rules.get('pins', [])) + len(rules.get('bans', []))
+        if n:
+            print(f'Applied {n} match rules from data/match_rules.json', file=sys.stderr)
+    except FileNotFoundError:
+        pass
     return topics
+
+
+ANCHORS = set()
+PINNED = set()
+
+
+def strength(universe, pattern):
+    p = pattern.strip()
+    if ' ' in p or p in ANCHORS or (universe, pattern) in PINNED:
+        return 'strong'
+    return 'weak'
 
 
 def icpsrs_for(bioguide):
@@ -149,16 +185,25 @@ def pattern_hit(hay, pattern):
 
 
 def match_topics(records, topics):
+    """Evidence rule mirrors votes.js: one strong hit (phrase / anchor /
+    pinned) or two independent weak hits — a lone generic word is no match."""
     out = []
     for model, patterns in topics.items():
-        yes = no = other = 0
+        yes = no = other = strong_n = 0
         matched = set()
         for v in records:
             hay = (v['description'] + ' ' + ' '.join(v['keywords'])).lower()
-            hit = next((p for p in patterns if pattern_hit(hay, p)), None)
-            if not hit:
+            hits = [p for p in patterns if pattern_hit(hay, p)]
+            if not hits:
                 continue
-            matched.add(hit)
+            has_strong = any(strength(model, p) == 'strong' for p in hits)
+            # "child" + "children" is one signal, not two — dedupe weak stems
+            weak_stems = {p.strip()[:4] for p in hits if strength(model, p) == 'weak'}
+            if not has_strong and len(weak_stems) < 2:
+                continue
+            if has_strong:
+                strong_n += 1
+            matched.update(hits[:3])
             if v['member_vote'] == 'Yes':
                 yes += 1
             elif v['member_vote'] == 'No':
@@ -168,7 +213,8 @@ def match_topics(records, topics):
         total = yes + no + other
         if total:
             out.append({'model': model, 'total': total, 'yes': yes, 'no': no,
-                        'other': other, 'matchedKeywords': sorted(matched)})
+                        'other': other, 'strongPct': round(strong_n / total * 100),
+                        'matchedKeywords': sorted(matched)})
     out.sort(key=lambda t: -t['total'])
     return out
 

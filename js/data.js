@@ -107,12 +107,43 @@ const UNIVERSE_KEYWORDS = {
   'Christian Voters': ['religious liberty', 'religious freedom', 'faith-based', 'prayer', 'church'],
 };
 
+// ── Pattern strength ───────────────────────────────────────────────────────
+// A lone generic word ("housing", "school") is thin evidence; a multi-word
+// phrase or an unambiguous anchor word is solid. Matching requires one strong
+// hit or two independent weak hits — see votes.js / matchTextToUniverses.
+const ANCHOR_WORDS = new Set([
+  'gun','firearm','nra','atf','rifle','pistol','handgun','ammunition','silencer','suppressor',
+  'abortion','unborn','fetus','roe','dobbs','contraception',
+  'medicare','medicaid','obamacare','prescription','pharmaceutical',
+  'veteran','vfw','ptsd','servicemember','military','troops','pentagon','defense',
+  'immigrant','daca','dreamer','asylum','deportation',
+  'tariff','pension','broadband','opioid','tuition',
+  'renter','tenant','eviction','landlord','homeowner','mortgage',
+  'inflation','teacher','farm','usda','livestock',
+  'conservation','wildlife','hunting','wilderness',
+  'climate','carbon','pollution','solar','fracking','pipeline',
+  'police','sheriff','prison','incarceration','sentencing','parole',
+  'union','osha','nlrb',
+  'absentee','disability','ssdi','snap','tanf','foia',
+]);
+
+function patternStrength(p) {
+  const t = (p || '').trim();
+  return t.includes(' ') || ANCHOR_WORDS.has(t) ? 'strong' : 'weak';
+}
+
 // Patterns for any universe: the curated set if one exists, otherwise the full
 // lowercased name as a single phrase (len >= 6 avoids noisy short-word names).
+// User-trained rules (pins add patterns, bans remove them) are applied on top —
+// see MatchRules in util.js.
 function universePatterns(name) {
-  if (UNIVERSE_KEYWORDS[name]) return UNIVERSE_KEYWORDS[name];
-  const low = (name || '').toLowerCase();
-  return low.length >= 6 ? [low] : [];
+  let base = UNIVERSE_KEYWORDS[name];
+  if (!base) {
+    const low = (name || '').toLowerCase();
+    base = low.length >= 6 ? [low] : [];
+  }
+  if (typeof MatchRules !== 'undefined') return MatchRules.apply(name, base);
+  return base;
 }
 
 // Substring matching is fine for long phrases but poisons short ones —

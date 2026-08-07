@@ -43,6 +43,7 @@ const Report = {
         <select id="rp-sev"><option value="">All Severities</option>${SEVERITY_ORDER.map(s => `<option>${s}</option>`).join('')}</select>
         <select id="rp-uni"><option value="">All Universes</option>${universes.map(u => `<option>${esc(u)}</option>`).join('')}</select>
         <span class="count" id="rp-count"></span>
+        <button class="btn ghost sm" onclick="Report.rematchOppo()" title="Recompute universe matches for auto-extracted attacks using the current matching rules">⟳ Re-match Universes</button>
         <button class="btn ghost sm" onclick="Report.exportOppoCSV()">Export CSV</button>
         <button class="btn ghost sm" onclick="Store.exportProject('${meta.id}')">Export Project</button>
         <button class="btn gold sm" onclick="location.hash='#/hera?project=${meta.id}'">Build Campaign →</button>
@@ -164,6 +165,28 @@ const Report = {
     });
   },
 
+  // Re-run universe matching over auto-extracted attacks with current rules.
+  // Imported Poseidon attacks keep their hand-assigned universes untouched.
+  async rematchOppo() {
+    const meta = this.state.meta;
+    const payload = Store.getPayload(meta.id);
+    if (!payload || !payload.attacks) return;
+    const universes = await loadUniverses();
+    const index = buildUniverseIndex(universes);
+    let changed = 0;
+    for (const a of payload.attacks) {
+      if (!(a.notes || '').startsWith('Auto-extracted')) continue;
+      const u = matchTextToUniverses(a.key_detail || a.attack, index, 3);
+      if (u[0] !== a.best_universe || u[1] !== a.secondary_universe || u[2] !== a.tertiary_universe) changed++;
+      a.best_universe = u[0] || '';
+      a.secondary_universe = u[1] || '';
+      a.tertiary_universe = u[2] || '';
+    }
+    Store.saveProject(meta, payload);
+    this.renderOppo(meta, payload);
+    setStatus('#rp-count', changed ? `${changed} attacks re-matched` : 'No changes — matches already current');
+  },
+
   exportOppoCSV() {
     const headers = ['number', 'category', 'attack', 'key_detail', 'severity', 'best_universe', 'secondary_universe', 'tertiary_universe', 'notes'];
     downloadFile((this.state.meta.subject || 'attacks').replace(/[^\w-]+/g, '_') + '_attacks.csv',
@@ -200,14 +223,11 @@ const Report = {
         <button class="btn ghost sm" onclick="Store.exportProject('${meta.id}')">Export Project</button>
         <button class="btn gold sm" onclick="location.hash='#/hera?project=${meta.id}'">Build Campaign →</button>
       </div>
+      <div class="notice" style="margin-top:0">A match needs <b>one strong signal</b> (phrase, anchor word, or a keyword you pinned) or <b>two independent weak ones</b>.
+        Click <b>×</b> on any keyword below to ban that keyword→universe pairing — the table recomputes instantly and the rule applies to every future run. Manage rules in <a href="#/settings">Settings</a>.</div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Universe</th><th>Votes</th><th>Yes</th><th>No</th><th>Other</th><th>Matched Keywords</th></tr></thead>
-        <tbody>${topics.map((t, i) => `<tr class="${i % 2 ? 'alt' : ''}">
-          <td><b>${esc(t.model)}</b></td><td>${t.total}</td>
-          <td><span class="badge yes">${t.yes}</span></td><td><span class="badge no">${t.no}</span></td>
-          <td><span class="badge other">${t.other}</span></td>
-          <td>${t.matchedKeywords.slice(0, 8).map(k => `<span class="pill tertiary">${esc(k)}</span>`).join('')}</td>
-        </tr>`).join('')}</tbody>
+        <thead><tr><th>Universe</th><th>Votes</th><th>Yes</th><th>No</th><th>Other</th><th>Confidence</th><th>Matched Keywords</th></tr></thead>
+        <tbody id="tp-body">${topics.map((t, i) => this.topicRow(t, i)).join('')}</tbody>
       </table></div>
 
       <div class="section-h"><h2>Keyword Vote Analysis</h2><span class="hint">aggregated across all loaded votes</span>
@@ -236,7 +256,39 @@ const Report = {
 
     $('#vt-search').addEventListener('input', () => this.applyVoteFilters());
     $('#vt-type').addEventListener('change', () => this.applyVoteFilters());
+    // Delegated handler for the ban-keyword × buttons in the topic table
+    $('#tp-body').addEventListener('click', e => {
+      const btn = e.target.closest('.kw-ban');
+      if (btn) this.banKeyword(btn.dataset.m, btn.dataset.k);
+    });
     this.applyVoteFilters();
+  },
+
+  topicRow(t, i) {
+    const conf = t.strongPct == null ? ''
+      : t.strongPct >= 70 ? `<span class="badge yes" title="${t.strongPct}% of matches came from strong signals">Strong</span>`
+      : t.strongPct >= 30 ? `<span class="badge other" title="${t.strongPct}% strong signals">Mixed</span>`
+      : `<span class="badge no" title="Only ${t.strongPct}% strong signals — matched mostly on pairs of weak words">Weak</span>`;
+    return `<tr class="${i % 2 ? 'alt' : ''}">
+      <td><b>${esc(t.model)}</b></td><td>${t.total}</td>
+      <td><span class="badge yes">${t.yes}</span></td><td><span class="badge no">${t.no}</span></td>
+      <td><span class="badge other">${t.other}</span></td>
+      <td>${conf}</td>
+      <td>${t.matchedKeywords.slice(0, 8).map(k =>
+        `<span class="pill tertiary kwpill">${esc(k)}<span class="kw-ban" data-m="${esc(t.model)}" data-k="${esc(k)}" title="Ban '${esc(k)}' → ${esc(t.model)} everywhere (undo in Settings)">×</span></span>`).join('')}</td>
+    </tr>`;
+  },
+
+  async banKeyword(universe, kw) {
+    MatchRules.ban(kw, universe);
+    const meta = this.state.meta;
+    const payload = Store.getPayload(meta.id);
+    if (!payload || !payload.votes) return;
+    const universes = await loadUniverses();
+    payload.topics = Votes.matchVotesToTopics(payload.votes, universes);
+    payload.keywords = Votes.analyzeKeywords(payload.votes, universes);
+    Store.saveProject(meta, payload);
+    this.renderVotes(meta, payload);
   },
 
   applyVoteFilters() {

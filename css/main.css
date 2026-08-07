@@ -63,14 +63,19 @@ button { font-family: var(--font); }
   border-bottom: 3px solid var(--gold);
   position: sticky; top: 0; z-index: 50;
 }
+/* Secondary-form Pantheon Insight lockup (mark + stacked wordmark), per the
+   brand guide: logo in tan on dark backgrounds. The app name sits past a
+   divider as a separate label, not attached to the logo. */
 .brand {
   display: flex; align-items: center; gap: 12px;
-  padding: 14px 0; cursor: pointer; user-select: none;
+  padding: 12px 0; cursor: pointer; user-select: none;
 }
-.brand .dome { width: 30px; height: 30px; flex: 0 0 auto; }
-.brand .wordmark { display: flex; flex-direction: column; line-height: 1.05; }
-.brand .wordmark .app { font-size: 19px; font-weight: 600; letter-spacing: .16em; color: var(--cream); }
-.brand .wordmark .co  { font-size: 9.5px; letter-spacing: .3em; color: var(--tan); text-transform: uppercase; margin-top: 2px; }
+.brand .mark { width: 38px; height: 38px; flex: 0 0 auto; color: var(--tan); }
+.brand .wordmark { display: flex; flex-direction: column; line-height: 1; }
+.brand .wordmark .p { font-size: 19px; font-weight: 600; letter-spacing: .18em; color: var(--tan); }
+.brand .wordmark .i { font-size: 9.5px; letter-spacing: .52em; color: var(--tan); margin-top: 3px; }
+.brand .app-divider { width: 1px; height: 26px; background: rgba(206,192,171,.28); margin: 0 4px 0 10px; }
+.brand .app-name { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--sand); }
 
 .nav { display: flex; gap: 4px; margin-left: auto; }
 .nav a {
@@ -229,6 +234,13 @@ tbody tr.alt:hover { background: var(--butter); }
   background: rgba(46,73,57,.09); color: var(--pine); border: 1px solid rgba(46,73,57,.22); }
 .pill.secondary { background: rgba(181,126,53,.1); color: var(--amber); border-color: rgba(181,126,53,.28); }
 .pill.tertiary  { background: rgba(119,101,80,.1); color: var(--bark); border-color: rgba(119,101,80,.25); }
+.kwpill .kw-ban { margin-left: 5px; cursor: pointer; color: var(--tan); font-weight: 700; }
+.kwpill .kw-ban:hover { color: var(--sev-major); }
+.rule-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid #EFEAE0; font-size: 13px; }
+.rule-row .type { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; padding: 2px 8px; border-radius: 5px; }
+.rule-row .type.pin { background: rgba(46,73,57,.12); color: var(--pine); }
+.rule-row .type.ban { background: rgba(140,58,43,.1); color: var(--sev-major); }
+.rule-row .del { margin-left: auto; cursor: pointer; color: var(--sev-major); font-weight: 700; }
 
 .detail-row { display: none; }
 .detail-row.open { display: table-row; }
