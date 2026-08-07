@@ -1,30 +1,37 @@
 name: ArtemisHera State Votes
-run-name: "State votes: ${{ inputs.state || 'scheduled refresh' }} ${{ inputs.year || '' }}"
+run-name: "State votes: ${{ inputs.state || 'scheduled refresh' }} ${{ inputs.session || '' }}"
+
+# Historical sessions are loaded once from Open States bulk CSV archives via
+# scripts/pack_openstates_session.py and committed. This workflow keeps the
+# CURRENT session current through the Open States v3 API.
+#
+# Free tier: 500 requests/day, 1 req/sec. Each state's weekly delta is a
+# handful of pages, and --max-requests caps every run, so the budget holds
+# even with many states.
 
 on:
   workflow_dispatch:
     inputs:
       state:
-        description: 'State abbreviation (e.g. VA)'
+        description: 'Full jurisdiction name (e.g. Virginia)'
         required: true
-      year:
-        description: 'Year to fetch (ignored if backfill is true)'
+      session:
+        description: 'Session identifier (e.g. 2026). Defaults to current year.'
         required: false
         default: ''
-      backfill:
-        description: 'Fetch ALL available sessions for the state'
+      since:
+        description: 'ISO date to pull updates from (default: 8 days ago)'
         required: false
-        default: 'false'
+        default: ''
 
   schedule:
-    # Weekly current-year refresh for every state already in data/state/
-    - cron: '0 7 * * 1'
+    - cron: '0 7 * * 1'   # Mondays 07:00 UTC
 
 permissions:
   contents: write
 
 jobs:
-  votes:
+  refresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,35 +39,56 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Fetch requested session(s)
+      - name: Refresh requested session
         if: github.event_name == 'workflow_dispatch'
         env:
-          LEGISCAN_KEY: ${{ secrets.LEGISCAN_KEY }}
+          OPENSTATES_KEY: ${{ secrets.OpenStates_Key }}
         run: |
-          if [ "${{ inputs.backfill }}" = "true" ]; then
-            python scripts/fetch_state_votes.py --state "${{ inputs.state }}" --all-years
-          else
-            YEAR="${{ inputs.year }}"
-            [ -z "$YEAR" ] && YEAR=$(date +%Y)
-            python scripts/fetch_state_votes.py --state "${{ inputs.state }}" --year "$YEAR"
-          fi
+          SESSION="${{ inputs.session }}"
+          [ -z "$SESSION" ] && SESSION=$(date +%Y)
+          ARGS="--state '${{ inputs.state }}' --session $SESSION"
+          [ -n "${{ inputs.since }}" ] && ARGS="$ARGS --since ${{ inputs.since }}"
+          eval python scripts/refresh_openstates.py $ARGS
 
-      - name: Scheduled current-year refresh
+      # Refresh the current session for every state already in data/state/.
+      # Budget is shared, so cap per-state requests to stay well under 500/day.
+      - name: Scheduled weekly refresh
         if: github.event_name == 'schedule'
         env:
-          LEGISCAN_KEY: ${{ secrets.LEGISCAN_KEY }}
+          OPENSTATES_KEY: ${{ secrets.OpenStates_Key }}
         run: |
           YEAR=$(date +%Y)
-          for st in $(ls data/state | grep -E '^[A-Z]{2}$'); do
-            echo "=== $st $YEAR ==="
-            python scripts/fetch_state_votes.py --state "$st" --year "$YEAR" || echo "skip $st"
-          done
+          STATES=$(ls data/state 2>/dev/null | grep -E '^[A-Z]{2}$' || true)
+          COUNT=$(echo "$STATES" | grep -c . || echo 1)
+          [ "$COUNT" -lt 1 ] && COUNT=1
+          BUDGET=$((400 / COUNT))
+          [ "$BUDGET" -lt 20 ] && BUDGET=20
+          echo "Refreshing $COUNT state(s), $BUDGET requests each"
+          python - <<'PYEOF' > /tmp/names.txt
+          import json, os
+          names = {}
+          try:
+              idx = json.load(open('data/state/sessions.json'))
+              for ab, e in idx.items():
+                  names[ab] = e.get('state_name', ab)
+          except Exception:
+              pass
+          for ab in sorted(os.listdir('data/state')):
+              if len(ab) == 2 and ab.isupper():
+                  print(f"{ab}\t{names.get(ab, ab)}")
+          PYEOF
+          while IFS=$'\t' read -r ab name; do
+            [ -z "$ab" ] && continue
+            echo "=== $name ($ab) $YEAR ==="
+            python scripts/refresh_openstates.py --state "$name" --session "$YEAR" \
+              --max-requests "$BUDGET" || echo "skip $ab"
+          done < /tmp/names.txt
 
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/state
-          git diff --staged --quiet && echo "No changes" || git commit -m "State votes update: ${{ inputs.state || 'scheduled' }} ${{ inputs.year || '' }}"
+          git diff --staged --quiet && echo "No changes" || git commit -m "State votes refresh: ${{ inputs.state || 'weekly' }} ${{ inputs.session || '' }}"
           git pull --rebase origin main || true
           git push
