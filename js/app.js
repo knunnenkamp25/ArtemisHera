@@ -394,15 +394,21 @@ const App = {
   tokenNotice() {
     return GH.getToken()
       ? `<div class="notice">GitHub token saved ✓ — scrapes launch directly. <a href="javascript:void(0)" onclick="GH.setToken('');App.route()">reset token</a></div>`
-      : `<div class="notice"><b>One-time setup:</b> launching cloud scrapes requires a GitHub Personal Access Token (repo scope) so this page can trigger the workflow. You'll be prompted on first launch; it's stored only in this browser.</div>`;
+      : `<div class="notice"><b>One-time setup:</b> launching cloud scrapes requires a GitHub token so this page can trigger the workflow. Use a <b>fine-grained</b> token scoped to this repo only, with <b>Actions: Read and write</b> — not a classic <code>repo</code> token, which would grant access to every repository you own. You'll be prompted on first launch; it's stored only in this browser.</div>`;
   },
 
   async launchScrapeFlow(opts) {
     const el = opts.statusEl;
     if (!GH.getToken()) {
       showModal('GitHub Token Required', `
-        <p style="font-size:13.5px;margin-bottom:12px">To launch cloud scrapes, paste a GitHub <b>Personal Access Token</b> with <b>repo</b> scope (or fine-grained with Actions write on <b>${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}</b>). Create one at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a>. It is stored only in this browser's localStorage and sent only to api.github.com.</p>
-        <input type="text" id="pat-input" placeholder="ghp_… or github_pat_…">
+        <p style="font-size:13.5px;margin-bottom:10px">To launch cloud scrapes, paste a GitHub <b>fine-grained personal access token</b>. Create one at
+          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a> with:</p>
+        <ul style="font-size:13px;margin:0 0 12px 20px">
+          <li>Repository access: <b>Only select repositories</b> → <b>${esc(CONFIG.GH_REPO)}</b></li>
+          <li>Permissions: <b>Actions → Read and write</b></li>
+        </ul>
+        <p style="font-size:12.5px;color:var(--bark);margin-bottom:12px">Avoid a classic <code>repo</code>-scope token — it would grant this page access to every repository you own. The token is stored only in this browser's localStorage and sent only to api.github.com.</p>
+        <input type="password" id="pat-input" placeholder="github_pat_…" autocomplete="off">
         <div style="margin-top:14px"><button class="btn gold" onclick="
           GH.setToken(document.getElementById('pat-input').value.trim());
           closeModal();">Save Token</button></div>`);
