@@ -191,17 +191,17 @@ const Report = {
         <div class="stat"><div class="lbl">Yes</div><div class="val pine">${yes}</div></div>
         <div class="stat"><div class="lbl">No</div><div class="val major">${no}</div></div>
         <div class="stat"><div class="lbl">Other / Absent</div><div class="val niche">${votes.length - yes - no}</div></div>
-        <div class="stat"><div class="lbl">OTS Models Hit</div><div class="val pine">${topics.length}</div></div>
+        <div class="stat"><div class="lbl">Universes Hit</div><div class="val pine">${topics.length}</div></div>
       </div>
 
-      <div class="section-h"><h2>OTS Model Topic Analysis</h2><span class="hint">votes matched to targeting models</span>
+      <div class="section-h"><h2>Universe Topic Analysis</h2><span class="hint">votes matched to targeting universes</span>
         <span class="spacer"></span>
         <button class="btn ghost sm" onclick="Report.exportTopicsCSV()">Export CSV</button>
         <button class="btn ghost sm" onclick="Store.exportProject('${meta.id}')">Export Project</button>
         <button class="btn gold sm" onclick="location.hash='#/hera?project=${meta.id}'">Build Campaign →</button>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>OTS Model</th><th>Votes</th><th>Yes</th><th>No</th><th>Other</th><th>Matched Keywords</th></tr></thead>
+        <thead><tr><th>Universe</th><th>Votes</th><th>Yes</th><th>No</th><th>Other</th><th>Matched Keywords</th></tr></thead>
         <tbody>${topics.map((t, i) => `<tr class="${i % 2 ? 'alt' : ''}">
           <td><b>${esc(t.model)}</b></td><td>${t.total}</td>
           <td><span class="badge yes">${t.yes}</span></td><td><span class="badge no">${t.no}</span></td>
@@ -213,7 +213,7 @@ const Report = {
       <div class="section-h"><h2>Keyword Vote Analysis</h2><span class="hint">aggregated across all loaded votes</span>
         <span class="spacer"></span><button class="btn ghost sm" onclick="Report.exportKeywordsCSV()">Export CSV</button></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Keyword</th><th>Total</th><th>Yes</th><th>No</th><th>Yes %</th><th>OTS Model Matches</th></tr></thead>
+        <thead><tr><th>Keyword</th><th>Total</th><th>Yes</th><th>No</th><th>Yes %</th><th>Universe Matches</th></tr></thead>
         <tbody>${keywords.slice(0, 150).map((k, i) => `<tr class="${i % 2 ? 'alt' : ''}">
           <td><b>${esc(k.keyword)}</b></td><td>${k.total}</td><td>${k.yes}</td><td>${k.no}</td>
           <td>${k.percentage}%</td>
@@ -278,7 +278,7 @@ const Report = {
       ['date', 'congress', 'chamber', 'bill_number', 'description', 'question', 'result', 'member_vote', 'keywords']), 'text/csv');
   },
   exportTopicsCSV() {
-    downloadFile('ots_topic_analysis.csv', toCSV(this.state.topics.map(t => ({ ...t, matchedKeywords: t.matchedKeywords.join('; ') })),
+    downloadFile('universe_topic_analysis.csv', toCSV(this.state.topics.map(t => ({ ...t, matchedKeywords: t.matchedKeywords.join('; ') })),
       ['model', 'total', 'yes', 'no', 'other', 'matchedKeywords']), 'text/csv');
   },
   exportKeywordsCSV() {

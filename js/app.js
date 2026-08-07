@@ -31,7 +31,7 @@ const App = {
   home() {
     const g = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="#CEC0AB" stroke-width="1.7" stroke-linecap="square">${paths}</svg>`;
     const cards = [
-      { id: 'federal', title: 'Scrape Federal Votes', desc: 'Search any member of Congress (1st–current) and pull their full roll-call record from Voteview, with keyword extraction and OTS universe matching.', icon: g('<path d="M12 3 L21 9 L3 9 Z"/><path d="M5 9 V19 M9.7 9 V19 M14.3 9 V19 M19 9 V19"/><path d="M3 19 H21"/>') },
+      { id: 'federal', title: 'Scrape Federal Votes', desc: 'Search any member of Congress (1st–current) and pull their full roll-call record from Voteview, with keyword extraction and universe matching.', icon: g('<path d="M12 3 L21 9 L3 9 Z"/><path d="M5 9 V19 M9.7 9 V19 M14.3 9 V19 M19 9 V19"/><path d="M3 19 H21"/>') },
       { id: 'state', title: 'Scrape State Votes', desc: 'Search state legislators from the pre-scraped LegiScan library and analyze their voting record against targeting universes.', icon: g('<path d="M4 20 L4 10 L12 4 L20 10 L20 20"/><path d="M9 20 V14 H15 V20"/>') },
       { id: 'oppo', title: 'Upload Oppo Book', desc: 'Feed in an opposition research book (PDF/DOCX) — or a Poseidon attacks.json — and get the full attack-extraction dashboard with severity and universe matching.', icon: g('<path d="M5 4 H17 L19 6 V20 H5 Z"/><path d="M8 9 H16 M8 12.5 H16 M8 16 H13"/>') },
       { id: 'docs', title: 'Upload Documents', desc: 'Analyze any document — mailers, transcripts, filings, reports. Extracts significant keywords and maps them to voter universes.', icon: g('<path d="M4 5 H20 V19 H4 Z"/><path d="M7 9 H17 M7 12 H17 M7 15 H12"/>') },
@@ -143,7 +143,7 @@ const App = {
         if (!votes.length) throw new Error('No votes found for that selection.');
         setStatus('#fv-status', 'Analyzing…');
         $('#fv-fill').style.width = '100%';
-        const models = await loadOTSModels();
+        const models = await loadUniverses();
         const meta = Store.saveProject({
           id: 'fed-' + uid(), name: `${selected.name} — Federal Votes`, type: 'federal-votes',
           status: 'complete', subject: selected.name,
@@ -246,7 +246,7 @@ const App = {
       try {
         const votes = await Votes.loadStateVotes(st, se, person);
         if (!votes.length) throw new Error('No votes found for this legislator.');
-        const models = await loadOTSModels();
+        const models = await loadUniverses();
         const topics = Votes.matchVotesToTopics(votes, models);
         const keywords = Votes.analyzeKeywords(votes, models);
         const meta = Store.saveProject({
@@ -305,7 +305,7 @@ const App = {
       const onStatus = (msg, frac) => { setStatus('#up-status', msg); if (frac != null) $('#up-fill').style.width = Math.round(frac * 100) + '%'; };
       try {
         const text = await Docs.extractText(file, onStatus);
-        const universes = await loadPoseidonUniverses();
+        const universes = await loadUniverses();
         if (isOppo) {
           const subject = $('#up-subject').value.trim() || file.name.replace(/\.[^.]+$/, '');
           let attacks;
@@ -484,12 +484,13 @@ const App = {
 
       <div class="card panel" style="margin-top:18px">
         <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">Universe Source</h2>
-          <span class="hint">drives oppo, document and news matching</span></div>
+          <span class="hint">one list drives everything — votes, oppo books, documents, news</span></div>
         <p style="font-size:13.5px;color:var(--bark);max-width:760px">
-          Paste a Google Sheet link to load the universe list live — <b>column A</b> is read as the universe names,
-          and title/header rows are skipped automatically. The sheet must be shared
-          <b>"Anyone with the link can view"</b>, or the unauthenticated CSV export is refused.
+          Paste a Google Sheet link to load the universe list live — <b>column A</b> is read as the universe names.
+          The sheet must be shared <b>"Anyone with the link can view"</b>, or the unauthenticated CSV export is refused.
           Leave it blank to use the bundled ${POSEIDON_UNIVERSES.length}-universe list.
+          ${Object.keys(UNIVERSE_KEYWORDS).length} universes carry curated keyword patterns for vote matching;
+          the rest match documents and news by name and match votes only when their full name appears in bill text.
         </p>
         <div class="row">
           <div class="grow"><label class="fld">Google Sheet URL or ID</label>
@@ -509,14 +510,6 @@ const App = {
         <div id="uni-preview"></div>
       </div>
 
-      <div class="card panel" style="margin-top:18px">
-        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">OTS Model Source</h2>
-          <span class="hint">drives vote topic matching</span></div>
-        <p style="font-size:13.5px;color:var(--bark)">
-          ${CONFIG.OTS_SHEET_ID
-            ? `Loading models from Google Sheet <code>${esc(CONFIG.OTS_SHEET_ID)}</code>.`
-            : `Using the bundled ${OTS_FALLBACK.length}-model list. Note that only ${Object.keys(TOPIC_KEYWORDS).length} of these have keyword mappings, so the remaining ${OTS_FALLBACK.length - Object.keys(TOPIC_KEYWORDS).length} appear in the list but never match a vote. Set <code>CONFIG.OTS_SHEET_ID</code> in <code>js/data.js</code> to load from a sheet instead.`}
-        </p>
       </div>`;
 
     const render = (msg, cls) => {

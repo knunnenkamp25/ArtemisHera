@@ -10,14 +10,10 @@ const CONFIG = {
   GH_WORKFLOW: 'scrape.yml',
   GH_VOTES_WORKFLOW: 'federal-votes.yml',
 
-  // OTS model sheet (the 124-model vote-matching list). Optional.
-  OTS_SHEET_ID: '',        // e.g. '10rHtX5c2bADEwaozICW86qkEireYHIBY9cQ7U3Jfq4I'
-  OTS_SHEET_GID: '0',
-
-  // Poseidon universe sheet (the 211-universe list used for oppo books,
-  // documents, and news matching). A default can be baked in here, but the
-  // Settings page can override it at runtime so the list can be re-pointed
-  // without a code change. Sheet must be shared "Anyone with the link can view".
+  // Universe sheet — the single source of truth for ALL matching (votes, oppo
+  // books, documents, news). A default can be baked in here, but the Settings
+  // page can override it at runtime so the list can be re-pointed without a
+  // code change. Sheet must be shared "Anyone with the link can view".
   UNIVERSE_SHEET_ID: '',
   UNIVERSE_SHEET_GID: '0',
 
@@ -40,98 +36,93 @@ const PROXIES = [
   url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
 ];
 
-// ── OTS model fallback list (124 models) ───────────────────────────────────
-const OTS_FALLBACK = [
-  'Generation','Urbanicity','Transit Access','Political Party','Ideology','Veteran',
-  'Military Relationship','Home Owners','Home Renters','Dwelling Type',
-  'Gun Owners (Consumer Data)','Concealed Carry Permit Holders','Parents (Any Children)',
-  'Single Parents','Small Business Owners','Outdoorsman / Conservationists',
-  'Likely AB Voter','Party Switcher','ESL Speakers','Household Language',
-  'Charitable Donors (Non-Political)','Likely Donors (Political)',
-  'Health Care Costs Priority','Pet Owners','Occupation Group','Retired Voters',
-  'Religion','Marital Status','Investor','Online Buyer','Reachable - Walkable',
-  'Reachable - Digital Phone','Reachable - Cell','Reachable - Landline',
-  'Reachable - Mail','Unreachable','Credit Rating','HH Income','Net Worth',
-  'Inconsistent Voters','Newly Registered Voters','Movers','News / Media Habits',
-  'Independent Women','Independent Men','Suburban Women','Rural Women',
-  'Non-College Men','Non-College Women','Education Level','Ethnicity',
-  'Ethnicity Subgroup','Near-Retirees (55-64)','Medicare-Eligible (65+)',
-  'Multi-Generational Households','Senior Adult in Household',
-  'Young Adult in Household','Disability Status','NASCAR / Motorsports Fans',
-  'Gamers (PC/Console)','Credit Card User','Frequent Travelers',
-  'Politically Engaged','Religious Enthusiasm','Clergy / Religious Workers',
-  'College-Age Voters (18-22)','College-Educated Men','College-Educated Women',
-  'Construction / Trades Workers','Cross-Primary Voters','Drop-Off Voters',
-  'Empty Nesters','Executive / C-Suite','Farmers / Agricultural Workers',
-  'Female Veterans','First-Time Voters','Gardeners','High News Intake',
-  'Latino Men','Legal Professionals','Off-Year / Odd-Year Voter',
-  'Caregiver Household','Vietnam-Era Veterans','Casino / Gambling Interest',
-  'Reader','Music Enthusiast','Automotive Enthusiast','Cooking Enthusiast',
-  'Home Improvers','Crafter','Sports Fan','Snow Sports','Boating / Sailing',
-  'Smoker','Working Women','Reachable - Digital IP','Work From Home / SOHO',
-  'Collector','Retail Shopper','Arts Enthusiast','Photography Enthusiast',
-  'Movie / Entertainment Fan','Technology Enthusiast','Club Member',
-  'Upscale Lifestyle','No Internet / Digital Divide',
-  'Parents of School-Age Children (6-17)','Parents of Young Children (0-5)',
-  'Sandwich Generation','Teachers / Educators','White Working-Class Voters',
-  'Women of Color','Post-9/11 Veterans','Distressed Community Quintile',
-  'Neighbor States','Lives in College County','Nearest College Sector',
-  'Nearest College Level','Lives in Base County','Joint Base County',
-  'Nearest Base Component','USPS Distance Bucket','USPS Extended Hours',
-  'County Crime Quintile',
-];
-
-// ── OTS model → keyword patterns (vote/bill text matching) ─────────────────
-const TOPIC_KEYWORDS = {
-  'General Turnout': ['election', 'turnout', 'voting rights', 'voter registration', 'ballot', 'polling', 'franchise', 'suffrage', 'electoral'],
-  'Primary Turnout': ['primary', 'primary election', 'caucus', 'nominating', 'runoff'],
-  'Likely ABEV Voter': ['absentee', 'early voting', 'mail-in', 'mail ballot', 'vote by mail', 'provisional ballot'],
-  'Likely & Has ABEV Voter': ['absentee', 'early voting', 'mail-in', 'mail ballot', 'vote by mail'],
-  'Urbanicity': ['urban', 'rural', 'suburban', 'metropolitan', 'inner city', 'housing density', 'zoning', 'land use', 'community development'],
-  'Voter Propensity': ['election', 'voting', 'civic engagement', 'voter', 'franchise'],
-  'Likely Donors': ['campaign finance', 'political contribution', 'fundraising', 'donor', 'pac', 'super pac', 'citizens united', 'fec'],
-  'Likely Activists': ['protest', 'demonstration', 'activism', 'grassroots', 'civil rights', 'civil liberties', 'first amendment', 'free speech', 'petition'],
-  'Political Party': ['party', 'partisan', 'bipartisan', 'caucus', 'democratic', 'republican', 'independent'],
-  'Military Relationship': ['military', 'armed forces', 'defense', 'pentagon', 'dod', 'troops', 'servicemember', 'national guard', 'reserves', 'deployment', 'base closure'],
-  'Veteran': ['veteran', 'va ', 'veterans affairs', 'gi bill', 'vfw', 'disabled veteran', 'ptsd', 'wounded warrior', 'military service'],
-  'Pro2A': ['gun', 'firearm', 'second amendment', '2nd amendment', 'weapon', 'ammunition', 'concealed carry', 'background check', 'assault weapon', 'nra', 'atf', 'rifle', 'pistol', 'handgun', 'silencer', 'suppressor', 'bump stock', 'red flag'],
-  'Small Biz Owners': ['small business', 'small-business', 'sba', 'entrepreneur', 'startup', 'sole proprietor', 'microloan', 'paycheck protection', 'ppp'],
-  'Parents': ['parent', 'child care', 'childcare', 'family leave', 'parental', 'custody', 'adoption', 'foster', 'child tax credit', 'child welfare', 'family'],
-  'Kids in Household': ['child', 'children', 'youth', 'juvenile', 'minor', 'pediatric', 'school lunch', 'snap', 'chip', 'head start'],
-  'Home Owners': ['homeowner', 'home owner', 'mortgage', 'property tax', 'home equity', 'housing', 'hud', 'fannie mae', 'freddie mac', 'fha', 'real estate'],
-  'Home Renters': ['renter', 'tenant', 'rent', 'rental', 'eviction', 'affordable housing', 'section 8', 'housing voucher', 'landlord'],
-  'Streaming Only': ['streaming', 'broadband', 'internet access', 'digital divide', 'net neutrality', 'fcc', 'telecommunications', 'cord cutting'],
-  'TV Viewer': ['broadcast', 'television', 'tv ', 'cable', 'fcc', 'media', 'spectrum', 'telecommunications'],
-  'Word of Month': ['communication', 'misinformation', 'disinformation', 'social media', 'free speech', 'censorship', 'information'],
-  'Education': ['education', 'school', 'student', 'college', 'university', 'teacher', 'curriculum', 'tuition', 'student loan', 'pell grant', 'title i', 'stem', 'vocational', 'higher education', 'k-12', 'elementary', 'secondary', 'charter school', 'head start'],
-  'NIMBY': ['zoning', 'land use', 'building permit', 'development', 'neighborhood', 'eminent domain', 'infrastructure', 'construction', 'waste', 'landfill', 'pipeline', 'power plant', 'nuclear', 'wind farm', 'solar farm', 'transmission line'],
-  'Social Media': ['social media', 'facebook', 'twitter', 'tiktok', 'instagram', 'online platform', 'section 230', 'content moderation', 'algorithm', 'data privacy', 'tech company', 'big tech'],
-  'Household Language': ['language', 'bilingual', 'english', 'esl', 'translation', 'interpreter', 'multilingual', 'immigration'],
-  'Family Generation': ['generational', 'millennial', 'gen z', 'baby boomer', 'generation x', 'intergenerational', 'aging', 'elderly', 'senior', 'youth'],
-  'Generation': ['generational', 'millennial', 'gen z', 'baby boomer', 'generation x', 'senior', 'aging', 'elderly', 'youth', 'retirement'],
-  'Prolife': ['abortion', 'pro-life', 'prolife', 'pro life', 'unborn', 'fetus', 'reproductive', 'roe', 'planned parenthood', 'contraception', 'birth control', 'family planning', 'hyde amendment', 'dobbs'],
-  'Walkable Households': ['walkability', 'pedestrian', 'sidewalk', 'transit', 'public transit', 'transportation', 'commute', 'bike', 'bicycle', 'urban planning'],
-  'Mailable Households': ['postal', 'usps', 'mail', 'mailing', 'post office', 'package', 'delivery', 'shipping'],
-  'Cleopatra': ['women', 'woman', 'gender', 'female', 'maternal', 'title ix', 'pay equity', 'equal pay', 'sexual harassment', 'domestic violence', 'violence against women', 'vawa'],
-  'Reducing crime': ['crime', 'criminal', 'law enforcement', 'police', 'prison', 'incarceration', 'sentencing', 'recidivism', 'public safety', 'fbi', 'dea', 'drug trafficking', 'gang', 'theft', 'robbery', 'homicide', 'murder', 'assault', 'justice reform', 'bail'],
-  'Cost of Living': ['inflation', 'cost of living', 'consumer price', 'cpi', 'gas price', 'fuel cost', 'grocery', 'food price', 'wage', 'minimum wage', 'affordability', 'economic relief', 'price gouging'],
-  'Health care costs': ['health care', 'healthcare', 'medical', 'insurance', 'medicaid', 'medicare', 'prescription', 'drug price', 'pharmaceutical', 'hospital', 'affordable care act', 'aca', 'obamacare', 'copay', 'deductible', 'premium', 'public option'],
-  'Outdoorsman/Conservationists': ['conservation', 'wildlife', 'hunting', 'fishing', 'forest', 'national park', 'public land', 'endangered species', 'wilderness', 'water quality', 'clean water', 'clean air', 'epa', 'environment', 'climate', 'emission', 'pollution', 'sustainability'],
-  'Inconsistent Voters': ['election', 'voter', 'turnout', 'registration', 'ballot access', 'civic'],
-  'Trump not midterms': ['midterm', 'election', 'presidential', 'off-year', 'special election'],
-  'Economically Stressed': ['poverty', 'unemployment', 'jobless', 'welfare', 'food stamp', 'snap', 'tanf', 'economic hardship', 'housing assistance', 'debt', 'bankruptcy', 'foreclosure', 'eviction', 'homelessness'],
-  'Independent Women': ['women', 'woman', 'female', 'gender', 'title ix', 'equal pay', 'reproductive', 'maternal', 'childcare'],
-  'Independent Men': ['employment', 'labor', 'trade', 'manufacturing', 'infrastructure', 'job training', 'apprenticeship'],
-  'ESL Speakers': ['english', 'esl', 'bilingual', 'language', 'immigration', 'interpreter', 'translation', 'citizenship'],
-  'Low News Intake': ['media', 'information', 'literacy', 'news', 'press', 'journalism', 'broadcast'],
-  'High News Intake': ['media', 'press', 'journalism', 'broadcast', 'news', 'information', 'foia', 'transparency'],
-  'Cablezones': ['cable', 'broadcast', 'spectrum', 'fcc', 'television', 'telecommunications', 'media market'],
-  'Likely Survey Taker': ['census', 'survey', 'data collection', 'statistics', 'demographic', 'american community survey'],
-  'Ideology': ['ideology', 'conservative', 'liberal', 'progressive', 'moderate', 'bipartisan', 'partisan', 'caucus'],
-  'Influencers': ['social media', 'online platform', 'influencer', 'content creator', 'digital', 'internet', 'technology'],
-  'Movers': ['relocation', 'moving', 'migration', 'housing', 'census', 'demographic', 'population'],
-  'Party Switcher': ['party', 'partisan', 'bipartisan', 'crossover', 'independent', 'realignment', 'moderate'],
+// ── Universe → keyword patterns ────────────────────────────────────────────
+// Curated phrase patterns for vote/bill-text matching, keyed by universe name
+// (ported from the congress-votes TOPIC_KEYWORDS dictionary and remapped onto
+// the unified universe list). Universes without an entry fall back to matching
+// their full lowercased name as a phrase — see universePatterns().
+const UNIVERSE_KEYWORDS = {
+  'Election Integrity Priority': ['election', 'turnout', 'voting rights', 'voter registration', 'ballot', 'polling', 'franchise', 'suffrage', 'electoral'],
+  'Early Voters': ['early voting', 'absentee', 'mail-in', 'mail ballot', 'vote by mail', 'provisional ballot'],
+  'Mail Voters': ['mail ballot', 'vote by mail', 'absentee', 'mail-in', 'drop box'],
+  'Urban Density Advocates': ['urban', 'rural', 'suburban', 'metropolitan', 'inner city', 'housing density', 'zoning', 'land use', 'community development'],
+  'Sporadic Voters': ['election', 'voter', 'turnout', 'registration', 'ballot access', 'civic engagement'],
+  'Political Donors': ['campaign finance', 'political contribution', 'fundraising', 'donor', 'pac', 'super pac', 'citizens united', 'fec'],
+  'Community Activists': ['protest', 'demonstration', 'activism', 'grassroots', 'civil rights', 'civil liberties', 'first amendment', 'free speech', 'petition'],
+  'Military Family': ['military', 'armed forces', 'defense', 'pentagon', 'dod', 'troops', 'servicemember', 'national guard', 'reserves', 'deployment', 'base closure'],
+  'Veterans': ['veteran', 'va ', 'veterans affairs', 'gi bill', 'vfw', 'disabled veteran', 'ptsd', 'wounded warrior', 'military service'],
+  'Second Amendment Supporters': ['gun', 'firearm', 'second amendment', '2nd amendment', 'ammunition', 'concealed carry', 'nra', 'atf', 'rifle', 'pistol', 'handgun', 'silencer', 'suppressor', 'bump stock'],
+  'Gun Control Advocates': ['gun violence', 'background check', 'red flag', 'assault weapon', 'gun safety', 'school shooting'],
+  'Small Business Owners': ['small business', 'small-business', 'sba', 'entrepreneur', 'startup', 'sole proprietor', 'microloan', 'paycheck protection', 'ppp'],
+  'Parents': ['parent', 'child care', 'childcare', 'family leave', 'parental', 'custody', 'adoption', 'foster', 'child tax credit', 'child welfare'],
+  'Caregivers': ['caregiver', 'child', 'children', 'juvenile', 'pediatric', 'school lunch', 'snap', 'chip', 'head start', 'elder care', 'long-term care'],
+  'Homeowners': ['homeowner', 'home owner', 'mortgage', 'property tax', 'home equity', 'housing', 'hud', 'fannie mae', 'freddie mac', 'fha', 'real estate'],
+  'Renters': ['renter', 'tenant', 'rent', 'rental', 'eviction', 'affordable housing', 'section 8', 'housing voucher', 'landlord'],
+  'Streaming Service Subscribers': ['streaming', 'broadband', 'internet access', 'digital divide', 'net neutrality', 'fcc', 'cord cutting'],
+  'Cable News Watchers': ['broadcast', 'television', 'tv ', 'cable', 'fcc', 'spectrum', 'telecommunications'],
+  'Social Media Active': ['social media', 'facebook', 'twitter', 'tiktok', 'instagram', 'online platform', 'section 230', 'content moderation', 'algorithm', 'data privacy', 'big tech'],
+  'Online Community Engaged': ['misinformation', 'disinformation', 'censorship', 'online safety', 'digital literacy'],
+  'Education Priority': ['education', 'school', 'student', 'college', 'university', 'curriculum', 'tuition', 'title i', 'stem', 'vocational', 'higher education', 'k-12', 'elementary', 'secondary', 'charter school'],
+  'Teachers': ['teacher', 'classroom', 'public school', 'school board', 'education funding'],
+  'Student Loan Concerned': ['student loan', 'tuition', 'pell grant', 'loan forgiveness', 'student debt'],
+  'Home Values Concerned': ['zoning', 'land use', 'building permit', 'eminent domain', 'landfill', 'transmission line', 'property value'],
+  'First Generation Immigrant': ['language', 'bilingual', 'esl', 'translation', 'interpreter', 'multilingual', 'naturalization'],
+  'Second Generation Immigrant': ['english', 'esl', 'bilingual', 'citizenship', 'immigrant family'],
+  'Age 65+': ['senior', 'aging', 'elderly', 'retirement', 'medicare', 'social security', 'pension', 'nursing home', 'assisted living'],
+  'Pro-Life': ['abortion', 'pro-life', 'prolife', 'pro life', 'unborn', 'fetus', 'roe', 'planned parenthood', 'hyde amendment', 'dobbs'],
+  'Pro-Choice': ['reproductive', 'contraception', 'birth control', 'family planning', 'abortion access', 'roe'],
+  'Urban': ['transit', 'public transit', 'pedestrian', 'sidewalk', 'bike lane', 'commute', 'urban planning'],
+  'Social Justice Advocates': ['gender', 'title ix', 'pay equity', 'equal pay', 'sexual harassment', 'domestic violence', 'violence against women', 'vawa', 'discrimination'],
+  'Law and Order': ['crime', 'criminal', 'prison', 'incarceration', 'sentencing', 'public safety', 'fbi', 'dea', 'drug trafficking', 'gang', 'theft', 'robbery', 'homicide', 'murder', 'assault'],
+  'Law Enforcement': ['police', 'law enforcement', 'sheriff', 'first responder', 'officer'],
+  'Criminal Justice Reform': ['sentencing reform', 'bail reform', 'recidivism', 'parole', 'expungement', 'mandatory minimum', 'justice reform'],
+  'Economic Populists': ['inflation', 'cost of living', 'consumer price', 'gas price', 'grocery', 'food price', 'wage', 'affordability', 'price gouging', 'wall street'],
+  'Minimum Wage Supporters': ['minimum wage', 'living wage', 'wage theft', 'overtime pay'],
+  'Healthcare Cost Concerned': ['health care', 'healthcare', 'medical', 'insurance', 'medicaid', 'medicare', 'prescription', 'drug price', 'pharmaceutical', 'hospital', 'affordable care act', 'aca', 'obamacare', 'copay', 'deductible', 'premium'],
+  'Healthcare Workers': ['nurse', 'physician', 'hospital staffing', 'medical workforce'],
+  'Mental Health Priority': ['mental health', 'suicide prevention', 'behavioral health', 'substance abuse', 'opioid', 'addiction', 'counseling'],
+  'Conservation Minded': ['conservation', 'wildlife', 'hunting', 'fishing', 'forest', 'national park', 'public land', 'endangered species', 'wilderness'],
+  'Climate/Environment Priority': ['climate', 'emission', 'carbon', 'pollution', 'clean air', 'clean water', 'epa', 'greenhouse', 'environmental protection', 'sustainability'],
+  'Renewable Energy Supporters': ['renewable', 'solar', 'wind energy', 'clean energy', 'green energy', 'energy efficiency'],
+  'Fossil Fuel Industry': ['oil and gas', 'drilling', 'fracking', 'pipeline', 'coal', 'petroleum', 'refinery', 'offshore drilling'],
+  'Border Security Priority': ['border security', 'border wall', 'illegal immigration', 'deportation', 'asylum', 'border patrol', 'sanctuary'],
+  'Immigration Advocates': ['immigrant', 'daca', 'dreamer', 'pathway to citizenship', 'refugee', 'visa'],
+  'Union Households': ['union', 'collective bargaining', 'right to work', 'prevailing wage', 'nlrb', 'organized labor'],
+  'Labor Rights Priority': ['worker protection', 'workplace safety', 'osha', 'paid leave', 'family leave', 'labor rights'],
+  'Manufacturing Workers': ['manufacturing', 'factory', 'trade', 'infrastructure', 'job training', 'apprenticeship', 'supply chain'],
+  'Trade Deal Skeptics': ['tariff', 'trade deal', 'nafta', 'china trade', 'outsourcing', 'trade deficit'],
+  'High Debt Ratio': ['poverty', 'unemployment', 'jobless', 'welfare', 'food stamp', 'snap', 'tanf', 'economic hardship', 'debt', 'bankruptcy', 'foreclosure', 'homelessness'],
+  'Anti-Tax': ['tax increase', 'tax hike', 'tax cut', 'tax relief', 'income tax', 'sales tax', 'irs', 'tax burden'],
+  'Tax Fairness Priority': ['tax loophole', 'corporate tax', 'wealth tax', 'fair share', 'tax avoidance'],
+  'Property Tax Concerned': ['property tax', 'assessment', 'homestead exemption', 'levy'],
+  'Affordable Housing Priority': ['affordable housing', 'housing crisis', 'housing assistance', 'housing voucher', 'homelessness', 'rent control'],
+  'Government Transparency Priority': ['transparency', 'foia', 'open records', 'ethics', 'disclosure', 'accountability', 'inspector general', 'government waste'],
+  'National News Readers': ['media', 'press', 'journalism', 'broadcast', 'news', 'foia'],
+  'Influencer Followers': ['influencer', 'content creator', 'online platform', 'digital'],
+  'Swing Voters': ['bipartisan', 'crossover', 'independent', 'realignment', 'moderate'],
+  'COVID Vaccine Concerned': ['vaccine mandate', 'vaccination', 'covid', 'pandemic', 'lockdown', 'mask mandate'],
+  'Agricultural Workers': ['farm', 'agriculture', 'crop', 'livestock', 'usda', 'farm bill', 'dairy', 'ranch'],
+  'Rural': ['rural', 'broadband expansion', 'small town', 'farm community'],
+  'Disability Community': ['disability', 'americans with disabilities', 'accessible', 'special needs', 'ssdi', 'supplemental security income'],
+  'Christian Voters': ['religious liberty', 'religious freedom', 'faith-based', 'prayer', 'church'],
 };
+
+// Patterns for any universe: the curated set if one exists, otherwise the full
+// lowercased name as a single phrase (len >= 6 avoids noisy short-word names).
+function universePatterns(name) {
+  if (UNIVERSE_KEYWORDS[name]) return UNIVERSE_KEYWORDS[name];
+  const low = (name || '').toLowerCase();
+  return low.length >= 6 ? [low] : [];
+}
+
+// Substring matching is fine for long phrases but poisons short ones —
+// 'ssi' hits "commission", 'ada ' hits "Canada". Patterns under 5 chars
+// must match on word boundaries.
+function patternHit(hay, pattern) {
+  const p = pattern.trim();
+  if (p.length >= 5) return hay.includes(pattern);
+  return new RegExp('\\b' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(hay);
+}
 
 // ── Legislative stop words (tuned for bill language) ───────────────────────
 const STOP = new Set('a an the of to for in on and or by with from at is it be as that this which act bill resolution provide providing amend relating united states america congress house senate section purpose purposes other certain establish authorize making regarding concerning department federal require general agreeing agreed passage motion table suspend rules stat app cong sess under title joint submitted chapter code proceed upon cloture nomination confirmation invoke invoking calendar consideration referred clerk thereof shall may such not into been has have would further than its all secretary virginia florida texas california ohio new york pennsylvania georgia illinois michigan north carolina south carolina arizona colorado missouri indiana iowa oregon utah district columbia judge circuit court united states nomination'.split(' '));

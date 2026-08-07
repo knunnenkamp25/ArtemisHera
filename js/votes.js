@@ -164,17 +164,17 @@ const Votes = {
     })).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   },
 
-  // ── Analysis: OTS topic matching + keyword aggregation ─────────────────
-  matchVotesToTopics(voteRecords, models) {
+  // ── Analysis: universe topic matching + keyword aggregation ────────────
+  matchVotesToTopics(voteRecords, universes) {
     const results = [];
-    for (const model of models) {
-      const patterns = TOPIC_KEYWORDS[model] || [];
+    for (const model of universes) {
+      const patterns = universePatterns(model);
       if (!patterns.length) continue;
       let yes = 0, no = 0, other = 0;
       const matchedKeywords = new Set();
       for (const v of voteRecords) {
         const hay = ((v.description || '') + ' ' + (v.keywords || []).join(' ')).toLowerCase();
-        const hit = patterns.find(p => hay.includes(p));
+        const hit = patterns.find(p => patternHit(hay, p));
         if (!hit) continue;
         matchedKeywords.add(hit);
         if (v.member_vote === 'Yes') yes++;

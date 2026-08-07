@@ -10,7 +10,7 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 
 | Task | How it works |
 |---|---|
-| **Scrape Federal Votes** | Searches every member of Congress from a repo-hosted member index (12,607 members, rebuilt monthly from Voteview), loads their roll-call record per congress/chamber, extracts keywords, and matches votes to OTS targeting models. Tries the browser first; when Voteview is unreachable it offers a one-click cloud run that does the same work in GitHub Actions. |
+| **Scrape Federal Votes** | Searches every member of Congress from a repo-hosted member index (12,607 members, rebuilt monthly from Voteview), loads their roll-call record per congress/chamber, extracts keywords, and matches votes to targeting universes. Tries the browser first; when Voteview is unreachable it offers a one-click cloud run that does the same work in GitHub Actions. |
 | **Scrape State Votes** | Pulls pre-scraped LegiScan data (`state_data/` in the congress-votes repo) for state legislators and runs the same analysis. |
 | **Upload Oppo Book** | Reads a PDF/DOCX in the browser (pdf.js / mammoth), runs a signal-phrase attack-extraction engine across Poseidon's 23 categories, scores severity, and matches each hit to voter universes. Also imports a Poseidon-skill `attacks.json` directly for full-fidelity results. |
 | **Upload Documents** | Any PDF/DOCX/TXT — keyword frequency analysis with tiered universe matching. |
@@ -26,7 +26,7 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 - `css/main.css` — Pantheon Insight brand system (March 2025 guidelines: forest/tan/gold palette, Gill Sans Nova stack)
 - `scripts/news_scraper.py` — multi-strategy scraper (WP REST → RSS → sitemap → HTML waterfall)
 - `scripts/build_federal_index.py` — builds `data/federal/members.json` from Voteview's 6 MB member CSV
-- `scripts/fetch_federal_votes.py` — server-side vote loader (reads `TOPIC_KEYWORDS` straight out of `js/data.js` so the dictionary has one home)
+- `scripts/fetch_federal_votes.py` — server-side vote loader (reads `UNIVERSE_KEYWORDS` straight out of `js/data.js` so the dictionary has one home)
 - `.github/workflows/scrape.yml` — news/web scraper runner
 - `.github/workflows/federal-votes.yml` — cloud vote lookups + monthly member-index refresh
 - Workflows are `workflow_dispatch`, triggered from the app with a user-supplied PAT (stored in localStorage, sent only to api.github.com)
@@ -38,7 +38,7 @@ Voteview serves no `Access-Control-Allow-Origin` header, so a browser cannot fet
 
 ## Configuration
 
-- **OTS universe Google Sheet:** `CONFIG.OTS_SHEET_ID` in `js/data.js` is a **placeholder** — set it to the sheet ID (published/shared "anyone with link") and the app will load models from it; until then it uses the bundled 124-model fallback list.
+- **Universe Google Sheet:** one list drives all matching (votes, oppo, documents, news). Point the app at a sheet from **Settings → Universe Source** (column A = names, shared "anyone with link"); until then it uses the bundled 211-universe list. Curated keyword patterns for vote matching live in `UNIVERSE_KEYWORDS` in `js/data.js`.
 - **GitHub PAT:** needed only for launching cloud scrapes (repo scope or fine-grained Actions write). Prompted in-app on first launch.
 
 ## Local development

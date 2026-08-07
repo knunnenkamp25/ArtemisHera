@@ -62,14 +62,32 @@ def extract_keywords(text):
 
 
 def load_topic_keywords():
-    """Read TOPIC_KEYWORDS out of js/data.js so the dictionary has one home."""
+    """Mirror the browser's unified universe matching from js/data.js.
+
+    Every universe in POSEIDON_UNIVERSES gets a pattern list: the curated
+    UNIVERSE_KEYWORDS entry when one exists, otherwise the full lowercased
+    name as a single phrase (len >= 6) — same rules as universePatterns().
+    Note: the server can't see a user's sheet override (it lives in browser
+    localStorage), so cloud runs always match against the bundled list.
+    """
     src = open(os.path.join(os.path.dirname(__file__), '..', 'js', 'data.js')).read()
-    block = src.split('const TOPIC_KEYWORDS = {', 1)[1].split('\n};', 1)[0]
-    topics = {}
+
+    block = src.split('const UNIVERSE_KEYWORDS = {', 1)[1].split('\n};', 1)[0]
+    curated = {}
     for line in block.splitlines():
         m = re.match(r"\s*'([^']+)':\s*\[(.*)\],\s*$", line)
         if m:
-            topics[m.group(1)] = re.findall(r"'([^']*)'", m.group(2))
+            curated[m.group(1)] = re.findall(r"'([^']*)'", m.group(2))
+
+    uni_block = src.split('const POSEIDON_UNIVERSES = [', 1)[1].split('];', 1)[0]
+    universes = re.findall(r"'([^']+)'", uni_block)
+
+    topics = {}
+    for name in universes:
+        if name in curated:
+            topics[name] = curated[name]
+        elif len(name) >= 6:
+            topics[name] = [name.lower()]
     return topics
 
 
@@ -121,6 +139,15 @@ def load_votes(icpsrs, congress_from, congress_to, chamber):
     return records
 
 
+def pattern_hit(hay, pattern):
+    """Mirror js patternHit(): word-boundary match for short patterns —
+    plain substring poisons them ('ssi' hits 'commission')."""
+    p = pattern.strip()
+    if len(p) >= 5:
+        return pattern in hay
+    return re.search(r'\b' + re.escape(p) + r'\b', hay) is not None
+
+
 def match_topics(records, topics):
     out = []
     for model, patterns in topics.items():
@@ -128,7 +155,7 @@ def match_topics(records, topics):
         matched = set()
         for v in records:
             hay = (v['description'] + ' ' + ' '.join(v['keywords'])).lower()
-            hit = next((p for p in patterns if p in hay), None)
+            hit = next((p for p in patterns if pattern_hit(hay, p)), None)
             if not hit:
                 continue
             matched.add(hit)

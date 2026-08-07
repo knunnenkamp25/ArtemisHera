@@ -81,9 +81,9 @@ function extractKeywords(text) {
   return [...new Set(words)];
 }
 
-// ── Tiered model matching (primary / secondary / tertiary) ─────────────────
-function scoreModelMatch(kwLower, model) {
-  const patterns = TOPIC_KEYWORDS[model] || [];
+// ── Tiered universe matching (primary / secondary / tertiary) ──────────────
+function scoreModelMatch(kwLower, universe) {
+  const patterns = universePatterns(universe);
   for (const p of patterns) if (p === kwLower) return 'primary';
   for (const p of patterns) if (p.includes(kwLower) || kwLower.includes(p)) return 'secondary';
   const kwWords = kwLower.split(/\s+/);
@@ -212,8 +212,9 @@ function setUniverseSheet(v, skipRows = 0) {
   _universeCache = null;   // force a reload on next use
 }
 
+// The single universe list, used by every pipeline: votes, oppo, docs, news.
 let _universeCache = null;
-async function loadPoseidonUniverses() {
+async function loadUniverses() {
   if (_universeCache) return _universeCache;
   const sheet = getUniverseSheet();
   if (sheet) {
@@ -229,21 +230,6 @@ async function loadPoseidonUniverses() {
   _universeCache = [...POSEIDON_UNIVERSES];
   Object.assign(UniverseSource, { label: 'bundled fallback', count: _universeCache.length, fromSheet: false });
   return _universeCache;
-}
-
-// ── OTS model list (vote matching) ─────────────────────────────────────────
-let _otsCache = null;
-async function loadOTSModels() {
-  if (_otsCache) return _otsCache;
-  if (CONFIG.OTS_SHEET_ID) {
-    try {
-      const names = await fetchSheetNames(CONFIG.OTS_SHEET_ID, CONFIG.OTS_SHEET_GID);
-      _otsCache = names;
-      return names;
-    } catch (e) { console.warn('OTS sheet unavailable, using fallback list', e.message); }
-  }
-  _otsCache = [...OTS_FALLBACK];
-  return _otsCache;
 }
 
 // ── DOM / misc helpers ─────────────────────────────────────────────────────
