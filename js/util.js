@@ -148,18 +148,99 @@ function matchTextToUniverses(text, index, n = 3) {
   return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 }
 
-// ── OTS universe loading (Google Sheet placeholder → fallback) ─────────────
+// ── Google Sheet universe loading ──────────────────────────────────────────
+// Accepts a full Sheets URL or a bare id and returns the id.
+function sheetIdFrom(urlOrId) {
+  const s = (urlOrId || '').trim();
+  if (!s) return '';
+  const m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : s.replace(/^.*[/=]/, '');
+}
+
+function sheetCsvUrl(id, gid = '0') {
+  return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
+}
+
+// Pull column A as a name list. `skipRows` drops leading title/header rows —
+// the Poseidon inventory sheet carries two. A title like "Poseidon OTS
+// Inventory" is indistinguishable from a real entry, so this is an explicit
+// setting rather than a guess; the single-word header filter below is only a
+// safety net for the obvious cases.
+const _HEADERISH = /^(name|universe|universes|model|models|model name|ots|ots model|inventory|title)$/i;
+function namesFromSheetCsv(text, skipRows = 0) {
+  return text.split(/\r?\n/)
+    .slice(skipRows)
+    .map(line => (parseCSVLine(line)[0] || '').trim())
+    .filter(v => v && !_HEADERISH.test(v));
+}
+
+async function fetchSheetNames(idOrUrl, gid = '0', skipRows = 0) {
+  const id = sheetIdFrom(idOrUrl);
+  if (!id) throw new Error('that does not look like a Google Sheets link or id.');
+  let resp;
+  try {
+    resp = await smartFetch(sheetCsvUrl(id, gid));
+  } catch (e) {
+    // smartFetch rejects HTML bodies, which is exactly what Google returns for
+    // a sheet that is private, deleted, or not shared to "anyone with the link".
+    throw new Error('the sheet could not be read. Google returns an HTML error page instead of CSV when a sheet is private, deleted, or not shared to "anyone with the link".');
+  }
+  const names = namesFromSheetCsv(await resp.text(), skipRows);
+  if (!names.length) throw new Error('the sheet loaded but column A had no usable values (check the header-rows setting).');
+  return names;
+}
+
+// Where the Poseidon universe list came from on the last load, for the UI.
+const UniverseSource = { label: 'bundled fallback', count: 0, fromSheet: false };
+const UNIVERSE_SHEET_KEY = 'artemishera.universe_sheet';
+const UNIVERSE_SKIP_KEY = 'artemishera.universe_skip';
+
+function getUniverseSheet() {
+  return localStorage.getItem(UNIVERSE_SHEET_KEY) || CONFIG.UNIVERSE_SHEET_ID || '';
+}
+function getUniverseSkip() {
+  return parseInt(localStorage.getItem(UNIVERSE_SKIP_KEY) || '0', 10) || 0;
+}
+function setUniverseSheet(v, skipRows = 0) {
+  if (v) {
+    localStorage.setItem(UNIVERSE_SHEET_KEY, v);
+    localStorage.setItem(UNIVERSE_SKIP_KEY, String(skipRows));
+  } else {
+    localStorage.removeItem(UNIVERSE_SHEET_KEY);
+    localStorage.removeItem(UNIVERSE_SKIP_KEY);
+  }
+  _universeCache = null;   // force a reload on next use
+}
+
+let _universeCache = null;
+async function loadPoseidonUniverses() {
+  if (_universeCache) return _universeCache;
+  const sheet = getUniverseSheet();
+  if (sheet) {
+    try {
+      const names = await fetchSheetNames(sheet, CONFIG.UNIVERSE_SHEET_GID, getUniverseSkip());
+      _universeCache = names;
+      Object.assign(UniverseSource, { label: 'Google Sheet', count: names.length, fromSheet: true });
+      return names;
+    } catch (e) {
+      console.warn('Universe sheet unreachable, using bundled list:', e.message);
+    }
+  }
+  _universeCache = [...POSEIDON_UNIVERSES];
+  Object.assign(UniverseSource, { label: 'bundled fallback', count: _universeCache.length, fromSheet: false });
+  return _universeCache;
+}
+
+// ── OTS model list (vote matching) ─────────────────────────────────────────
 let _otsCache = null;
 async function loadOTSModels() {
   if (_otsCache) return _otsCache;
   if (CONFIG.OTS_SHEET_ID) {
     try {
-      const url = `https://docs.google.com/spreadsheets/d/${CONFIG.OTS_SHEET_ID}/export?format=csv&gid=${CONFIG.OTS_SHEET_GID}`;
-      const resp = await smartFetch(url);
-      const rows = parseCSV(await resp.text());
-      const names = rows.map(r => Object.values(r)[0]).filter(Boolean);
-      if (names.length) { _otsCache = names; return names; }
-    } catch (e) { console.warn('OTS sheet unavailable, using fallback list', e); }
+      const names = await fetchSheetNames(CONFIG.OTS_SHEET_ID, CONFIG.OTS_SHEET_GID);
+      _otsCache = names;
+      return names;
+    } catch (e) { console.warn('OTS sheet unavailable, using fallback list', e.message); }
   }
   _otsCache = [...OTS_FALLBACK];
   return _otsCache;

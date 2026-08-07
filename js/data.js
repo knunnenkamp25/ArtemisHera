@@ -10,11 +10,16 @@ const CONFIG = {
   GH_WORKFLOW: 'scrape.yml',
   GH_VOTES_WORKFLOW: 'federal-votes.yml',
 
-  // PLACEHOLDER — OTS universe Google Sheet.
-  // When ready, set OTS_SHEET_ID to the sheet id and the app will load
-  // universes from it (sheet must be shared "Anyone with the link can view").
+  // OTS model sheet (the 124-model vote-matching list). Optional.
   OTS_SHEET_ID: '',        // e.g. '10rHtX5c2bADEwaozICW86qkEireYHIBY9cQ7U3Jfq4I'
   OTS_SHEET_GID: '0',
+
+  // Poseidon universe sheet (the 211-universe list used for oppo books,
+  // documents, and news matching). A default can be baked in here, but the
+  // Settings page can override it at runtime so the list can be re-pointed
+  // without a code change. Sheet must be shared "Anyone with the link can view".
+  UNIVERSE_SHEET_ID: '',
+  UNIVERSE_SHEET_GID: '0',
 
   MAX_MANUAL_URLS: 5,      // manual web-scrape page limit
 

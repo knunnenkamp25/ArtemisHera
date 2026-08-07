@@ -80,9 +80,9 @@ const Docs = {
     return 'Niche';
   },
 
-  extractAttacks(text, subject, onStatus) {
+  extractAttacks(text, subject, onStatus, universes) {
     const sentences = this.splitSentences(text);
-    const index = buildUniverseIndex(POSEIDON_UNIVERSES);
+    const index = buildUniverseIndex(universes || POSEIDON_UNIVERSES);
     const attacks = [];
     const seen = new Set();
     let num = 0;
@@ -140,8 +140,8 @@ const Docs = {
   },
 
   // General documents: keyword + universe intelligence summary
-  analyzeDocument(text) {
-    const index = buildUniverseIndex(POSEIDON_UNIVERSES);
+  analyzeDocument(text, universes) {
+    const index = buildUniverseIndex(universes || POSEIDON_UNIVERSES);
     const freq = new Map();
     for (const w of (text.toLowerCase().split(/\W+/))) {
       if (w.length < 4 || STOP.has(w)) continue;

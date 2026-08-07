@@ -305,6 +305,7 @@ const App = {
       const onStatus = (msg, frac) => { setStatus('#up-status', msg); if (frac != null) $('#up-fill').style.width = Math.round(frac * 100) + '%'; };
       try {
         const text = await Docs.extractText(file, onStatus);
+        const universes = await loadPoseidonUniverses();
         if (isOppo) {
           const subject = $('#up-subject').value.trim() || file.name.replace(/\.[^.]+$/, '');
           let attacks;
@@ -312,7 +313,7 @@ const App = {
             attacks = Docs.parseAttacksJSON(text);
             onStatus('Imported ' + attacks.length + ' attacks from Poseidon file.');
           } else {
-            attacks = Docs.extractAttacks(text, subject, onStatus);
+            attacks = Docs.extractAttacks(text, subject, onStatus, universes);
             if (!attacks.length) throw new Error('No attack-signal sentences found — is this an oppo research document?');
           }
           const meta = Store.saveProject({
@@ -323,7 +324,7 @@ const App = {
           location.hash = '#/report/' + meta.id;
         } else {
           onStatus('Analyzing keywords…', 0.9);
-          const keywords = Docs.analyzeDocument(text);
+          const keywords = Docs.analyzeDocument(text, universes);
           const meta = Store.saveProject({
             id: 'doc-' + uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'documents',
             status: 'complete', subject: file.name,
@@ -482,11 +483,39 @@ const App = {
       </div>
 
       <div class="card panel" style="margin-top:18px">
-        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">OTS Universe Source</h2></div>
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">Universe Source</h2>
+          <span class="hint">drives oppo, document and news matching</span></div>
+        <p style="font-size:13.5px;color:var(--bark);max-width:760px">
+          Paste a Google Sheet link to load the universe list live — <b>column A</b> is read as the universe names,
+          and title/header rows are skipped automatically. The sheet must be shared
+          <b>"Anyone with the link can view"</b>, or the unauthenticated CSV export is refused.
+          Leave it blank to use the bundled ${POSEIDON_UNIVERSES.length}-universe list.
+        </p>
+        <div class="row">
+          <div class="grow"><label class="fld">Google Sheet URL or ID</label>
+            <input type="text" id="uni-sheet" placeholder="https://docs.google.com/spreadsheets/d/…"
+              value="${esc(getUniverseSheet())}"></div>
+          <div style="width:150px"><label class="fld">Header Rows</label>
+            <input type="number" id="uni-skip" min="0" max="20" value="${getUniverseSkip()}"></div>
+          <button class="btn" id="uni-test">Test &amp; Save</button>
+          <button class="btn ghost" id="uni-clear">Use Bundled List</button>
+        </div>
+        <p style="font-size:12.5px;color:var(--bark);margin-top:8px">
+          <b>Header Rows</b> is how many rows to skip before the data starts — the old Poseidon inventory sheet used
+          <b>2</b> (a title row and a column-header row). Check the preview below after testing: if the first chip is a
+          title rather than a real universe, raise this by one.
+        </p>
+        <div class="status" id="uni-status"></div>
+        <div id="uni-preview"></div>
+      </div>
+
+      <div class="card panel" style="margin-top:18px">
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">OTS Model Source</h2>
+          <span class="hint">drives vote topic matching</span></div>
         <p style="font-size:13.5px;color:var(--bark)">
           ${CONFIG.OTS_SHEET_ID
             ? `Loading models from Google Sheet <code>${esc(CONFIG.OTS_SHEET_ID)}</code>.`
-            : `No Google Sheet configured — using the bundled ${OTS_FALLBACK.length}-model fallback list. Set <code>CONFIG.OTS_SHEET_ID</code> in <code>js/data.js</code> once the sheet is ready (it must be shared "anyone with the link can view").`}
+            : `Using the bundled ${OTS_FALLBACK.length}-model list. Note that only ${Object.keys(TOPIC_KEYWORDS).length} of these have keyword mappings, so the remaining ${OTS_FALLBACK.length - Object.keys(TOPIC_KEYWORDS).length} appear in the list but never match a vote. Set <code>CONFIG.OTS_SHEET_ID</code> in <code>js/data.js</code> to load from a sheet instead.`}
         </p>
       </div>`;
 
@@ -530,6 +559,33 @@ const App = {
       };
       const con = $('#set-connect');
       if (con) con.onclick = () => this.promptForToken(() => this.settings());
+    };
+
+    // ── Universe sheet controls ──
+    $('#uni-test').onclick = async () => {
+      const val = $('#uni-sheet').value.trim();
+      const skip = Math.max(0, parseInt($('#uni-skip').value, 10) || 0);
+      if (!val) return setStatus('#uni-status', 'Paste a sheet link first, or use the bundled list.', 'err');
+      setStatus('#uni-status', 'Fetching sheet…');
+      $('#uni-preview').innerHTML = '';
+      try {
+        const names = await fetchSheetNames(val, CONFIG.UNIVERSE_SHEET_GID, skip);
+        setUniverseSheet(val, skip);
+        setStatus('#uni-status', `Loaded ${names.length} universes ✓ — saved and now in use for oppo, document and news matching.`, 'ok');
+        $('#uni-preview').innerHTML = `
+          <p style="font-size:12.5px;color:var(--bark);margin-top:10px">First entries — confirm these are real universes, not header text:</p>
+          <div class="chipgrid">${names.slice(0, 30).map(n => `<span class="chip">${esc(n)}</span>`).join('')}
+          ${names.length > 30 ? `<span class="chip" style="border-style:dashed">+${names.length - 30} more</span>` : ''}</div>`;
+      } catch (e) {
+        setStatus('#uni-status', `Not saved — ${e.message} The bundled ${POSEIDON_UNIVERSES.length}-universe list stays in use.`, 'err');
+      }
+    };
+    $('#uni-clear').onclick = () => {
+      setUniverseSheet('');
+      $('#uni-sheet').value = '';
+      $('#uni-skip').value = '0';
+      $('#uni-preview').innerHTML = '';
+      setStatus('#uni-status', `Using the bundled ${POSEIDON_UNIVERSES.length}-universe list.`, 'ok');
     };
 
     render();
