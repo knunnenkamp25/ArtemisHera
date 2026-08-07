@@ -131,28 +131,59 @@ const App = {
       if (e.target.id !== 'fv-run' || !selected) return;
       const from = Math.min(+$('#fv-from').value, +$('#fv-to').value);
       const to = Math.max(+$('#fv-from').value, +$('#fv-to').value);
+      const opts = { chamber: $('#fv-chamber').value, congressFrom: from, congressTo: to };
       e.target.disabled = true;
       $('#fv-track').classList.remove('hidden');
       try {
-        const votes = await Votes.loadFederalVotes(selected, { chamber: $('#fv-chamber').value, congressFrom: from, congressTo: to },
+        const votes = await Votes.loadFederalVotes(selected, opts,
           (msg, frac) => { setStatus('#fv-status', msg); $('#fv-fill').style.width = Math.round(frac * 100) + '%'; });
         if (!votes.length) throw new Error('No votes found for that selection.');
         setStatus('#fv-status', 'Analyzing…');
         $('#fv-fill').style.width = '100%';
         const models = await loadOTSModels();
-        const topics = Votes.matchVotesToTopics(votes, models);
-        const keywords = Votes.analyzeKeywords(votes, models);
         const meta = Store.saveProject({
           id: 'fed-' + uid(), name: `${selected.name} — Federal Votes`, type: 'federal-votes',
           status: 'complete', subject: selected.name,
-          summary: `${votes.length} votes · Congress ${from}–${to}`,
-        }, { member: selected, votes, topics, keywords });
+          summary: `${votes.length} votes · Congress ${from}–${to}${votes.partial ? ' (partial)' : ''}`,
+        }, {
+          member: selected, votes,
+          topics: Votes.matchVotesToTopics(votes, models),
+          keywords: Votes.analyzeKeywords(votes, models),
+        });
         location.hash = '#/report/' + meta.id;
       } catch (err) {
-        setStatus('#fv-status', err.message, 'err');
         e.target.disabled = false;
+        if (err.code === 'PROXY_FAILED') return this.offerCloudVotes(selected, opts);
+        setStatus('#fv-status', err.message, 'err');
       }
     });
+  },
+
+  // Voteview has no CORS headers; when every proxy fails, run it server-side.
+  offerCloudVotes(member, opts) {
+    setStatus('#fv-status', 'Voteview is not reachable directly from the browser.', 'err');
+    showModal('Run this lookup in the cloud', `
+      <p style="font-size:13.5px">Voteview does not send CORS headers, so the browser can only reach it through public proxies — and all of them failed just now (they rate-limit and choke on the multi-megabyte vote files).</p>
+      <p style="font-size:13.5px;margin-top:10px">ArtemisHera can run the same lookup in GitHub Actions instead: it downloads the vote files server-side, does the keyword and universe analysis, and commits the report. Takes roughly 2–5 minutes for <b>${esc(member.name)}</b>, Congress ${opts.congressFrom}–${opts.congressTo}.</p>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button class="btn gold" id="cv-go">Run in the Cloud</button>
+        <button class="btn ghost" onclick="closeModal()">Cancel</button>
+      </div>
+      <div class="status" id="cv-status"></div>`);
+
+    $('#cv-go').onclick = async () => {
+      if (!GH.getToken()) {
+        closeModal();
+        setStatus('#fv-status', 'A GitHub token is needed for cloud runs — set one up on a scrape page first.', 'err');
+        return;
+      }
+      setStatus('#cv-status', 'Dispatching workflow…');
+      try {
+        const id = await Votes.dispatchCloudVotes(member, opts);
+        closeModal();
+        location.hash = '#/report/' + id;
+      } catch (e) { setStatus('#cv-status', e.message, 'err'); }
+    };
   },
 
   /* State votes */
@@ -400,12 +431,36 @@ const App = {
     const meta = Store.getMeta(id) || (await Store.repoProjects()).find(p => p.id === id);
     if (!meta) return this.notFound();
     if (meta.type === 'news-scrape' || meta.type === 'web-scrape') return this.openNews(id);
-    const payload = Store.getPayload(id);
+
+    let payload = Store.getPayload(id);
+    // Cloud federal-vote runs land in data/federal/{id}.json
+    if (!payload && meta.type === 'federal-votes') {
+      const cloud = await Votes.fetchCloudVotes(id);
+      if (cloud) {
+        meta.status = 'complete';
+        meta.summary = `${cloud.votes.length} votes · cloud run`;
+        Store.saveProject(meta, cloud);
+        payload = cloud;
+      } else if (meta.status === 'running') return this.pendingCloudVotes(meta);
+    }
     if (!payload) return this.notFound('This project\'s data is not in this browser. Import its .artemishera.json export from the Projects page.');
     if (meta.type === 'oppo-book') return Report.renderOppo(meta, payload);
     if (meta.type === 'federal-votes' || meta.type === 'state-votes') return Report.renderVotes(meta, payload);
     if (meta.type === 'documents') return Report.renderDoc(meta, payload);
     this.notFound();
+  },
+
+  pendingCloudVotes(meta) {
+    $('#view').innerHTML = `
+      ${Report.crumbs(meta.name)}
+      <h1 class="page-title">${esc(meta.name)}</h1>
+      <div class="page-sub"><span class="status-dot running"></span>&nbsp; Cloud vote lookup in progress — GitHub Actions is downloading and analyzing the roll-call files.</div>
+      <div class="empty card"><div class="glyph">⟳</div>
+        <p>This page refreshes automatically. Typical run: 2–5 minutes.</p>
+        <p style="margin-top:12px"><a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener" class="btn ghost sm">View run status on GitHub</a></p>
+      </div>`;
+    clearTimeout(this._votePoll);
+    this._votePoll = setTimeout(() => { if (location.hash === '#/report/' + meta.id) this.openReport(meta.id); }, 25000);
   },
 
   async openNews(id) {

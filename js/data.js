@@ -8,6 +8,7 @@ const CONFIG = {
   GH_OWNER: 'knunnenkamp25',
   GH_REPO: 'ArtemisHera',
   GH_WORKFLOW: 'scrape.yml',
+  GH_VOTES_WORKFLOW: 'federal-votes.yml',
 
   // PLACEHOLDER — OTS universe Google Sheet.
   // When ready, set OTS_SHEET_ID to the sheet id and the app will load
@@ -17,16 +18,15 @@ const CONFIG = {
 
   MAX_MANUAL_URLS: 5,      // manual web-scrape page limit
 
-  VOTEVIEW_URLS: [
-    'https://voteview.com/static/data/out',
-    'https://voteview.polisci.ucla.edu/static/data/out',
-  ],
+  // The UCLA mirror has been unreachable; the browser path uses voteview.com
+  // only so a dead host doesn't double every timeout. The server-side scripts
+  // still try both.
+  VOTEVIEW_URLS: ['https://voteview.com/static/data/out'],
   // Pre-scraped state legislature data lives in the congress-votes repo
   STATE_DATA_BASE: 'https://raw.githubusercontent.com/knunnenkamp25/congress-votes/main/state_data',
 };
 
 const CAST_CODES = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};
-const PARTY_CODES = {'100':'Democratic','200':'Republican','328':'Independent'};
 
 // ── CORS proxies (battle-tested chain from congress-votes) ─────────────────
 const PROXIES = [

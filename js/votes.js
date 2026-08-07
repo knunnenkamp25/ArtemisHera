@@ -4,42 +4,21 @@
    ========================================================================= */
 
 const Votes = {
-  allMembers: [],          // deduplicated federal members
-  cachedMemberRows: [],    // raw CSV rows for ICPSR lookup
+  allMembers: [],          // federal member index (with icpsrs[])
   stateSessions: null,     // sessions.json
   stateMembers: [],
 
   // ── Federal member directory ───────────────────────────────────────────
+  // Served from the repo (data/federal/members.json), rebuilt monthly by the
+  // federal-votes workflow. Voteview sends no CORS headers, so fetching the
+  // 6 MB source CSV in the browser only works through flaky proxies.
   async loadMembers(onStatus) {
     if (this.allMembers.length) return this.allMembers;
-    for (const base of CONFIG.VOTEVIEW_URLS) {
-      try {
-        onStatus && onStatus('Loading member directory from Voteview…');
-        const resp = await smartFetch(`${base}/members/HSall_members.csv`);
-        const rows = parseCSV(await resp.text());
-        this.cachedMemberRows = rows;
-        const byId = new Map();
-        for (const r of rows) {
-          const key = r.bioguide_id || (r.bioname + r.state_abbrev);
-          if (!key) continue;
-          let m = byId.get(key);
-          if (!m) {
-            m = {
-              bioguide_id: r.bioguide_id, name: r.bioname, state: r.state_abbrev,
-              party: PARTY_CODES[r.party_code] || 'Other',
-              chambers: new Set(), minCongress: +r.congress, maxCongress: +r.congress,
-            };
-            byId.set(key, m);
-          }
-          m.chambers.add(r.chamber);
-          m.minCongress = Math.min(m.minCongress, +r.congress);
-          m.maxCongress = Math.max(m.maxCongress, +r.congress);
-        }
-        this.allMembers = [...byId.values()].map(m => ({ ...m, chambers: [...m.chambers] }));
-        return this.allMembers;
-      } catch (e) { console.warn('Voteview base failed:', base, e); }
-    }
-    throw new Error('Could not load the member directory — Voteview may be down.');
+    onStatus && onStatus('Loading member directory…');
+    const resp = await fetch('data/federal/members.json');
+    if (!resp.ok) throw new Error('Member directory is missing from the deployment (data/federal/members.json).');
+    this.allMembers = await resp.json();
+    return this.allMembers;
   },
 
   searchMembers(q) {
@@ -54,11 +33,7 @@ const Votes = {
   // ── Federal vote loading pipeline ──────────────────────────────────────
   async loadFederalVotes(member, opts, onStatus) {
     const { chamber = 'both', congressFrom, congressTo } = opts || {};
-    const icpsrSet = new Set(
-      this.cachedMemberRows
-        .filter(r => r.bioguide_id && r.bioguide_id === member.bioguide_id)
-        .map(r => r.icpsr)
-    );
+    const icpsrSet = new Set(member.icpsrs || []);
     const needed = [];
     for (let c = congressFrom; c <= congressTo; c++) {
       for (const ch of ['House', 'Senate']) {
@@ -70,7 +45,7 @@ const Votes = {
     if (!needed.length) throw new Error('No matching chamber/congress selections for this member.');
 
     const voteRecords = [];
-    let done = 0;
+    let done = 0, failures = 0;
     for (const n of needed) {
       const prefix = n.chamber === 'House' ? 'H' : 'S';
       onStatus && onStatus(`Loading ${n.chamber} votes, Congress ${n.congress} (${done + 1}/${needed.length})…`, done / needed.length);
@@ -104,11 +79,56 @@ const Votes = {
           break;
         } catch (e) { /* try next base */ }
       }
-      if (!loaded) console.warn(`Skipped ${prefix}${n.congress} — both Voteview domains failed`);
+      if (!loaded) { failures++; console.warn(`Skipped ${prefix}${n.congress} — both Voteview domains failed`); }
       done++;
     }
+    if (failures === needed.length) {
+      const err = new Error('Voteview is unreachable from the browser (no CORS headers, and every proxy failed).');
+      err.code = 'PROXY_FAILED';
+      throw err;
+    }
     voteRecords.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    voteRecords.partial = failures > 0;
     return voteRecords;
+  },
+
+  // Cloud fallback: GitHub Actions fetches the vote files server-side
+  async dispatchCloudVotes(member, opts) {
+    const projectId = 'fed-' + uid();
+    const resp = await GH.api(
+      `/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows/${CONFIG.GH_VOTES_WORKFLOW}/dispatches`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          ref: 'main',
+          inputs: {
+            project_id: projectId,
+            bioguide: member.bioguide_id,
+            member_name: member.name,
+            congress_from: String(opts.congressFrom),
+            congress_to: String(opts.congressTo),
+            chamber: opts.chamber,
+          },
+        }),
+      });
+    if (resp.status !== 204) throw new Error('Dispatch failed (' + resp.status + '): ' + (await resp.text()).slice(0, 200));
+    Store.saveProject({
+      id: projectId, name: `${member.name} — Federal Votes`, type: 'federal-votes',
+      status: 'running', subject: member.name,
+      summary: `Cloud run · Congress ${opts.congressFrom}–${opts.congressTo}`,
+    });
+    return projectId;
+  },
+
+  async fetchCloudVotes(projectId) {
+    for (const p of [`data/federal/${projectId}.json?t=${Date.now()}`,
+                     `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/data/federal/${projectId}.json?t=${Date.now()}`]) {
+      try {
+        const r = await fetch(p);
+        if (r.ok) return await r.json();
+      } catch (e) { /* next */ }
+    }
+    return null;
   },
 
   // ── State pipeline ─────────────────────────────────────────────────────

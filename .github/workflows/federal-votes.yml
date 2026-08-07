@@ -1,0 +1,98 @@
+name: ArtemisHera Federal Votes
+run-name: "Votes: ${{ inputs.member_name }} [${{ inputs.project_id }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID (assigned by the app)'
+        required: true
+      bioguide:
+        description: 'Bioguide ID of the member'
+        required: true
+      member_name:
+        description: 'Member display name'
+        required: false
+        default: ''
+      congress_from:
+        description: 'First congress to load'
+        required: true
+      congress_to:
+        description: 'Last congress to load'
+        required: true
+      chamber:
+        description: 'both | House | Senate'
+        required: false
+        default: 'both'
+
+  schedule:
+    # Refresh the member directory on the 1st of each month
+    - cron: '0 6 1 * *'
+
+permissions:
+  contents: write
+
+jobs:
+  votes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refresh member directory
+        run: python scripts/build_federal_index.py --out data/federal/members.json
+
+      - name: Fetch member votes
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python scripts/fetch_federal_votes.py \
+            --project-id "${{ inputs.project_id }}" \
+            --bioguide "${{ inputs.bioguide }}" \
+            --name "${{ inputs.member_name }}" \
+            --congress-from "${{ inputs.congress_from }}" \
+            --congress-to "${{ inputs.congress_to }}" \
+            --chamber "${{ inputs.chamber }}" \
+            --out "data/federal/${{ inputs.project_id }}.json"
+
+      - name: Update project manifest
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PID: ${{ inputs.project_id }}
+          MNAME: ${{ inputs.member_name }}
+          CFROM: ${{ inputs.congress_from }}
+          CTO: ${{ inputs.congress_to }}
+        run: |
+          python - <<'EOF'
+          import json, os, datetime
+          pid, mname = os.environ['PID'], os.environ['MNAME']
+          path = 'data/projects.json'
+          try:
+              projects = json.load(open(path))
+          except Exception:
+              projects = []
+          try:
+              payload = json.load(open(f'data/federal/{pid}.json'))
+              count = len(payload.get('votes', []))
+          except Exception:
+              count = 0
+          now = datetime.datetime.utcnow().isoformat() + 'Z'
+          projects = [p for p in projects if p.get('id') != pid]
+          projects.insert(0, {
+              'id': pid, 'name': f'{mname} — Federal Votes', 'type': 'federal-votes',
+              'status': 'complete', 'subject': mname,
+              'summary': f"{count} votes · Congress {os.environ['CFROM']}–{os.environ['CTO']}",
+              'created': now, 'updated': now,
+          })
+          json.dump(projects, open(path, 'w'), indent=2)
+          EOF
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No changes" || git commit -m "Federal votes: ${{ inputs.member_name }} ${{ inputs.project_id }}"
+          git pull --rebase origin main || true
+          git push

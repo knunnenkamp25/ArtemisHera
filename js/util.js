@@ -3,8 +3,19 @@
    ========================================================================= */
 
 // ── Smart fetch with CORS-proxy fallback + HTML-response detection ─────────
+// Every attempt is time-boxed: a hung free proxy would otherwise leave the UI
+// spinning forever, since fetch() has no default timeout.
+const FETCH_TIMEOUT_MS = 30000;
 let workingProxyIdx = -1;
-async function smartFetch(url) {
+
+async function fetchWithTimeout(url, ms = FETCH_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { signal: ctrl.signal }); }
+  finally { clearTimeout(timer); }
+}
+
+async function smartFetch(url, timeoutMs = FETCH_TIMEOUT_MS) {
   async function validateResp(resp) {
     if (!resp || !resp.ok) return null;
     const peek = await resp.clone().text();
@@ -14,17 +25,18 @@ async function smartFetch(url) {
   }
   if (workingProxyIdx >= 0) {
     try {
-      const r = await validateResp(await fetch(PROXIES[workingProxyIdx](url)));
+      const r = await validateResp(await fetchWithTimeout(PROXIES[workingProxyIdx](url), timeoutMs));
       if (r) return r;
-    } catch (e) { workingProxyIdx = -1; }
+    } catch (e) { /* fall through */ }
+    workingProxyIdx = -1;
   }
   try {
-    const r = await validateResp(await fetch(url));
+    const r = await validateResp(await fetchWithTimeout(url, timeoutMs));
     if (r) return r;
   } catch (e) { /* CORS blocked — fall through to proxies */ }
   for (let i = 0; i < PROXIES.length; i++) {
     try {
-      const r = await validateResp(await fetch(PROXIES[i](url)));
+      const r = await validateResp(await fetchWithTimeout(PROXIES[i](url), timeoutMs));
       if (r) { workingProxyIdx = i; return r; }
     } catch (e) { continue; }
   }

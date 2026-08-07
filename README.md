@@ -10,7 +10,7 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 
 | Task | How it works |
 |---|---|
-| **Scrape Federal Votes** | Searches every member of Congress (Voteview `HSall_members.csv`), loads their roll-call record per congress/chamber, extracts keywords, and matches votes to OTS targeting models. Runs entirely in the browser with a CORS-proxy fallback chain. |
+| **Scrape Federal Votes** | Searches every member of Congress from a repo-hosted member index (12,607 members, rebuilt monthly from Voteview), loads their roll-call record per congress/chamber, extracts keywords, and matches votes to OTS targeting models. Tries the browser first; when Voteview is unreachable it offers a one-click cloud run that does the same work in GitHub Actions. |
 | **Scrape State Votes** | Pulls pre-scraped LegiScan data (`state_data/` in the congress-votes repo) for state legislators and runs the same analysis. |
 | **Upload Oppo Book** | Reads a PDF/DOCX in the browser (pdf.js / mammoth), runs a signal-phrase attack-extraction engine across Poseidon's 23 categories, scores severity, and matches each hit to voter universes. Also imports a Poseidon-skill `attacks.json` directly for full-fidelity results. |
 | **Upload Documents** | Any PDF/DOCX/TXT — keyword frequency analysis with tiered universe matching. |
@@ -25,8 +25,16 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 - `index.html` + `js/*.js` — SPA with hash routing
 - `css/main.css` — Pantheon Insight brand system (March 2025 guidelines: forest/tan/gold palette, Gill Sans Nova stack)
 - `scripts/news_scraper.py` — multi-strategy scraper (WP REST → RSS → sitemap → HTML waterfall)
-- `.github/workflows/scrape.yml` — `workflow_dispatch` scraper runner, triggered from the app with a user-supplied PAT (stored in localStorage, sent only to api.github.com)
-- `data/projects.json` — manifest of cloud projects; `data/news/{id}.json` — per-project results
+- `scripts/build_federal_index.py` — builds `data/federal/members.json` from Voteview's 6 MB member CSV
+- `scripts/fetch_federal_votes.py` — server-side vote loader (reads `TOPIC_KEYWORDS` straight out of `js/data.js` so the dictionary has one home)
+- `.github/workflows/scrape.yml` — news/web scraper runner
+- `.github/workflows/federal-votes.yml` — cloud vote lookups + monthly member-index refresh
+- Workflows are `workflow_dispatch`, triggered from the app with a user-supplied PAT (stored in localStorage, sent only to api.github.com)
+- `data/projects.json` — manifest of cloud projects; `data/news/{id}.json` and `data/federal/{id}.json` — per-project results
+
+### Why Voteview needs a server-side path
+
+Voteview serves no `Access-Control-Allow-Origin` header, so a browser cannot fetch it directly, and the public CORS proxies rate-limit and stall on the 7–15 MB per-congress vote files. Two things follow: the member directory is mirrored into the repo (instant, same-origin), and vote loading falls back to GitHub Actions, which has no CORS constraint. Every browser fetch is time-boxed with `AbortController` so a hung proxy surfaces the fallback instead of spinning forever.
 
 ## Configuration
 
