@@ -46,7 +46,7 @@ const News = {
   async refreshRunStatus() {
     // Reconcile locally-tracked "running" scrape projects against Actions runs
     const running = Store._index().filter(p => p.status === 'running' && (p.type === 'news-scrape' || p.type === 'web-scrape'));
-    if (!running.length || !GH.getToken()) return;
+    if (!running.length || !GH.hasToken()) return;
     const runs = await GH.recentRuns();
     for (const proj of running) {
       const run = runs.find(r => (r.name || '').includes(proj.id) || (r.display_title || '').includes(proj.id));

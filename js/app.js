@@ -12,7 +12,9 @@ const App = {
     const seg = path.split('/').filter(Boolean);
 
     $$('.nav a').forEach(a => a.classList.remove('active'));
-    const navKey = !seg.length || seg[0] === 'setup' || seg[0] === 'report' || seg[0] === 'news' ? (seg[0] === 'report' || seg[0] === 'news' ? 'projects' : 'home') : seg[0];
+    const navKey = (seg[0] === 'report' || seg[0] === 'news') ? 'projects'
+      : (!seg.length || seg[0] === 'setup') ? 'home'
+      : seg[0];
     $(`.nav a[data-nav="${navKey}"]`)?.classList.add('active');
 
     if (!seg.length) return this.home();
@@ -21,6 +23,7 @@ const App = {
     if (seg[0] === 'news') return this.openNews(seg[1]);
     if (seg[0] === 'projects') return this.projects();
     if (seg[0] === 'hera') return Hera.renderPicker(params.get('project') || '');
+    if (seg[0] === 'settings') return this.settings();
     this.home();
   },
 
@@ -172,17 +175,22 @@ const App = {
       <div class="status" id="cv-status"></div>`);
 
     $('#cv-go').onclick = async () => {
-      if (!GH.getToken()) {
-        closeModal();
-        setStatus('#fv-status', 'A GitHub token is needed for cloud runs — set one up on a scrape page first.', 'err');
-        return;
+      if (!GH.hasToken()) {
+        // Chain straight into the connect prompt, then resume this run.
+        return this.promptForToken(() => this.offerCloudVotes(member, opts));
       }
       setStatus('#cv-status', 'Dispatching workflow…');
       try {
         const id = await Votes.dispatchCloudVotes(member, opts);
         closeModal();
         location.hash = '#/report/' + id;
-      } catch (e) { setStatus('#cv-status', e.message, 'err'); }
+      } catch (e) {
+        if (e.message === 'BAD_TOKEN') {
+          GH.setToken('');
+          return this.promptForToken(() => this.offerCloudVotes(member, opts));
+        }
+        setStatus('#cv-status', e.message, 'err');
+      }
     };
   },
 
@@ -392,36 +400,148 @@ const App = {
   },
 
   tokenNotice() {
-    return GH.getToken()
-      ? `<div class="notice">GitHub token saved ✓ — scrapes launch directly. <a href="javascript:void(0)" onclick="GH.setToken('');App.route()">reset token</a></div>`
-      : `<div class="notice"><b>One-time setup:</b> launching cloud scrapes requires a GitHub token so this page can trigger the workflow. Use a <b>fine-grained</b> token scoped to this repo only, with <b>Actions: Read and write</b> — not a classic <code>repo</code> token, which would grant access to every repository you own. You'll be prompted on first launch; it's stored only in this browser.</div>`;
+    return GH.hasToken()
+      ? `<div class="notice">GitHub connected ✓ — scrapes launch directly. <a href="#/settings">Manage connection</a></div>`
+      : `<div class="notice"><b>One-time setup:</b> launching cloud scrapes needs a GitHub token so this page can trigger the workflow. You'll be prompted on your first launch and it's remembered in this browser from then on — you do <b>not</b> need a new one per scrape. <a href="#/settings">Set it up now</a></div>`;
+  },
+
+  // Single place that asks for a token. `onSaved` runs after a successful save
+  // so the action the user was already trying to take just continues.
+  promptForToken(onSaved) {
+    showModal('Connect GitHub — one time', `
+      <p style="font-size:13.5px;margin-bottom:10px">Cloud scrapes run in GitHub Actions, so this page needs a token to start them. You only do this <b>once per browser</b> — it's saved locally and reused for every future scrape.</p>
+      <p style="font-size:13.5px;margin-bottom:6px">Create one at
+        <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a> with:</p>
+      <ul style="font-size:13px;margin:0 0 12px 20px">
+        <li>Repository access: <b>Only select repositories</b> → <b>${esc(CONFIG.GH_REPO)}</b></li>
+        <li>Permissions: <b>Actions → Read and write</b></li>
+        <li>Expiration: pick a long one (or <b>No expiration</b>) so you're not redoing this</li>
+      </ul>
+      <p style="font-size:12.5px;color:var(--bark);margin-bottom:12px">Avoid a classic <code>repo</code>-scope token — it would grant access to every repository you own. Stored only in this browser and sent only to api.github.com.</p>
+      <input type="password" id="pat-input" placeholder="github_pat_…" autocomplete="off">
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+        <button class="btn gold" id="pat-save">Save &amp; Verify</button>
+        <button class="btn ghost" onclick="closeModal()">Cancel</button>
+      </div>
+      <div class="status" id="pat-status"></div>`);
+
+    $('#pat-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('#pat-save').click(); });
+    $('#pat-save').onclick = async () => {
+      const field = $('#pat-input');
+      const value = field.value.trim();
+      if (!value) return setStatus('#pat-status', 'Paste a token first.', 'err');
+      GH.setToken(value);
+      field.value = '';                       // don't leave the secret in the DOM
+      setStatus('#pat-status', 'Verifying with GitHub…');
+      const res = await GH.verify();
+      if (!res.ok) {
+        GH.setToken('');
+        return setStatus('#pat-status', res.reason, 'err');
+      }
+      setStatus('#pat-status', 'Connected ✓', 'ok');
+      setTimeout(() => { closeModal(); onSaved && onSaved(); }, 500);
+    };
   },
 
   async launchScrapeFlow(opts) {
     const el = opts.statusEl;
-    if (!GH.getToken()) {
-      showModal('GitHub Token Required', `
-        <p style="font-size:13.5px;margin-bottom:10px">To launch cloud scrapes, paste a GitHub <b>fine-grained personal access token</b>. Create one at
-          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a> with:</p>
-        <ul style="font-size:13px;margin:0 0 12px 20px">
-          <li>Repository access: <b>Only select repositories</b> → <b>${esc(CONFIG.GH_REPO)}</b></li>
-          <li>Permissions: <b>Actions → Read and write</b></li>
-        </ul>
-        <p style="font-size:12.5px;color:var(--bark);margin-bottom:12px">Avoid a classic <code>repo</code>-scope token — it would grant this page access to every repository you own. The token is stored only in this browser's localStorage and sent only to api.github.com.</p>
-        <input type="password" id="pat-input" placeholder="github_pat_…" autocomplete="off">
-        <div style="margin-top:14px"><button class="btn gold" onclick="
-          GH.setToken(document.getElementById('pat-input').value.trim());
-          closeModal();">Save Token</button></div>`);
-      return;
-    }
+    if (!GH.hasToken()) return this.promptForToken(() => this.launchScrapeFlow(opts));
     setStatus(el, 'Dispatching workflow…');
     try {
       const id = await News.launchScrape(opts);
       setStatus(el, 'Scrape launched ✓ — tracking as a running project.', 'ok');
       setTimeout(() => location.hash = '#/news/' + id, 900);
     } catch (e) {
-      if (e.message === 'BAD_TOKEN') { GH.setToken(''); setStatus(el, 'Token was rejected — try again with a fresh token.', 'err'); }
-      else setStatus(el, e.message, 'err');
+      if (e.message === 'BAD_TOKEN') {
+        GH.setToken('');
+        setStatus(el, 'GitHub rejected the saved token — it was revoked or expired. Re-connecting…', 'err');
+        this.promptForToken(() => this.launchScrapeFlow(opts));
+      } else {
+        // Any other failure (permissions, network, GitHub outage) keeps the
+        // token — discarding it here is what made this feel per-scrape.
+        setStatus(el, e.message, 'err');
+      }
+    }
+  },
+
+  /* ── Settings: GitHub connection ────────────────────────────────────── */
+  async settings() {
+    const connected = GH.hasToken();
+    $('#view').innerHTML = `
+      <h1 class="page-title">Settings</h1>
+      <div class="page-sub">Connection and configuration for this browser.</div>
+
+      <div class="card panel">
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">GitHub Connection</h2>
+          <span class="hint">needed only for cloud scrapes and cloud vote lookups</span></div>
+        <p style="font-size:13.5px;color:var(--bark);max-width:760px">
+          Reports you generate in the browser (uploads, state votes) need nothing here. A token is only required to
+          <b>start</b> a GitHub Actions run. It is saved in this browser and reused indefinitely — one setup, not one per scrape.
+        </p>
+        <div id="set-state" style="margin-top:16px"></div>
+      </div>
+
+      <div class="card panel" style="margin-top:18px">
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:17px">OTS Universe Source</h2></div>
+        <p style="font-size:13.5px;color:var(--bark)">
+          ${CONFIG.OTS_SHEET_ID
+            ? `Loading models from Google Sheet <code>${esc(CONFIG.OTS_SHEET_ID)}</code>.`
+            : `No Google Sheet configured — using the bundled ${OTS_FALLBACK.length}-model fallback list. Set <code>CONFIG.OTS_SHEET_ID</code> in <code>js/data.js</code> once the sheet is ready (it must be shared "anyone with the link can view").`}
+        </p>
+      </div>`;
+
+    const render = (msg, cls) => {
+      $('#set-state').innerHTML = connected ? `
+        <div class="notice" style="margin-top:0"><b>Token saved in this browser.</b> ${msg || ''}</div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="set-test">Test Connection</button>
+          <button class="btn ghost" id="set-replace">Replace Token</button>
+          <button class="btn ghost" id="set-clear" style="color:var(--sev-major);border-color:var(--sev-major)">Remove Token</button>
+        </div>
+        <div class="status ${cls || ''}" id="set-status"></div>`
+        : `<div class="notice" style="margin-top:0">Not connected. Cloud scrapes will prompt you once, then remember it.</div>
+           <div style="margin-top:12px"><button class="btn gold" id="set-connect">Connect GitHub</button></div>`;
+      wire();
+    };
+
+    const wire = () => {
+      const test = $('#set-test');
+      if (test) test.onclick = async () => {
+        setStatus('#set-status', 'Checking…');
+        const res = await GH.verify();
+        if (res.ok) {
+          const exp = res.expiry ? ` Token expires ${fmtDate(res.expiry)}.` : ' This token has no expiration date.';
+          setStatus('#set-status', `Connected ✓ — can trigger ${res.workflows.length} workflow${res.workflows.length === 1 ? '' : 's'}.${exp}`, 'ok');
+        } else {
+          setStatus('#set-status', res.reason, 'err');
+        }
+      };
+      const rep = $('#set-replace');
+      if (rep) rep.onclick = () => this.promptForToken(() => this.settings());
+      const clr = $('#set-clear');
+      if (clr) clr.onclick = () => {
+        showModal('Remove Token', `
+          <p>Remove the saved GitHub token from this browser? Cloud scrapes will prompt for one again. This does not revoke the token on GitHub — do that at
+            <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">your token settings</a>.</p>
+          <div style="margin-top:16px;display:flex;gap:10px">
+            <button class="btn danger" onclick="GH.setToken('');closeModal();App.settings()">Remove</button>
+            <button class="btn ghost" onclick="closeModal()">Cancel</button>
+          </div>`);
+      };
+      const con = $('#set-connect');
+      if (con) con.onclick = () => this.promptForToken(() => this.settings());
+    };
+
+    render();
+    // Auto-verify a stored token so the page reflects reality without a click
+    if (connected) {
+      const res = await GH.verify();
+      if (res.ok) {
+        const exp = res.expiry ? `Expires ${fmtDate(res.expiry)}.` : 'No expiration set.';
+        setStatus('#set-status', `Verified ✓ — ${exp}`, 'ok');
+      } else {
+        setStatus('#set-status', res.reason, 'err');
+      }
     }
   },
 

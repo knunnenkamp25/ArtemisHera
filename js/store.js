@@ -80,8 +80,18 @@ const Store = {
 // ── GitHub PAT handling (for workflow dispatch + run status, news-dashboard pattern) ──
 const GH = {
   TOKEN_KEY: 'artemishera.gh_pat',
+  EXPIRY_KEY: 'artemishera.gh_pat_expiry',
+
   getToken() { return localStorage.getItem(this.TOKEN_KEY) || ''; },
-  setToken(t) { t ? localStorage.setItem(this.TOKEN_KEY, t) : localStorage.removeItem(this.TOKEN_KEY); },
+  // Presence check — use this instead of reading the token when you only need
+  // to know whether one is stored. The value itself should never be logged,
+  // rendered, or copied anywhere.
+  hasToken() { return !!localStorage.getItem(this.TOKEN_KEY); },
+  setToken(t) {
+    if (t) localStorage.setItem(this.TOKEN_KEY, t);
+    else { localStorage.removeItem(this.TOKEN_KEY); localStorage.removeItem(this.EXPIRY_KEY); }
+  },
+  getExpiry() { return localStorage.getItem(this.EXPIRY_KEY) || ''; },
 
   async api(path, opts = {}) {
     const token = this.getToken();
@@ -94,8 +104,35 @@ const GH = {
         ...(opts.headers || {}),
       },
     });
+    // GitHub reports fine-grained token expiry on every response; cache it so
+    // the Settings page can warn before the token lapses.
+    const exp = resp.headers.get('github-authentication-token-expiration');
+    if (exp) localStorage.setItem(this.EXPIRY_KEY, exp);
+    // 401 = the token itself is invalid or revoked. 403 usually means the token
+    // is fine but lacks a permission — never discard it for that.
     if (resp.status === 401) throw new Error('BAD_TOKEN');
     return resp;
+  },
+
+  // Validate the stored token against the repo. Returns {ok, reason, expiry}.
+  async verify() {
+    if (!this.hasToken()) return { ok: false, reason: 'No token saved yet.' };
+    let resp;
+    try {
+      resp = await this.api(`/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows`);
+    } catch (e) {
+      if (e.message === 'BAD_TOKEN') return { ok: false, reason: 'Token was rejected by GitHub — it may have been revoked or expired.', invalid: true };
+      return { ok: false, reason: 'Could not reach GitHub: ' + e.message };
+    }
+    if (resp.status === 403) return { ok: false, reason: `Token is valid but lacks the "Actions: Read and write" permission on ${CONFIG.GH_REPO}.` };
+    if (resp.status === 404) return { ok: false, reason: `Token cannot see ${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}. Check that the repository is selected under "Repository access".` };
+    if (!resp.ok) return { ok: false, reason: 'GitHub returned ' + resp.status + '.' };
+    const data = await resp.json();
+    return {
+      ok: true,
+      workflows: (data.workflows || []).map(w => w.name),
+      expiry: this.getExpiry(),
+    };
   },
 
   async dispatchScrape(inputs) {
