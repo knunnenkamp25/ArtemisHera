@@ -76,7 +76,7 @@ def api(path, **params):
             if e.code in (429, 502, 503, 504):
                 # Honour Retry-After when the server sends one.
                 hdr = e.headers.get('Retry-After') if e.headers else None
-                wait = int(hdr) if (hdr or '').isdigit() else 15 * (attempt + 1)
+                wait = min(int(hdr) if (hdr or '').isdigit() else 15 * (attempt + 1), 60)
                 print(f'  {e.code} from API, waiting {wait}s (attempt {attempt + 1}/4)',
                       file=sys.stderr)
                 time.sleep(wait)
@@ -122,6 +122,10 @@ def main():
     ap.add_argument('--base', default='data/state')
     ap.add_argument('--max-requests', type=int, default=120,
                     help='Hard ceiling on API calls this run (daily budget is 500)')
+    ap.add_argument('--max-minutes', type=float, default=8.0,
+                    help='Wall-clock ceiling. Retries and rate-limit backoff can '
+                         'stretch a run far past its request count, so stop and '
+                         'keep what we have rather than burning Actions minutes.')
     args = ap.parse_args()
 
     abbrev = STATE_ABBREV.get(args.state, args.state)
@@ -138,9 +142,14 @@ def main():
 
     page, added_votes = 1, 0
     bills_seen = vote_events_seen = dupes = 0
+    deadline = time.monotonic() + args.max_minutes * 60
     while True:
         if _requests >= args.max_requests:
             print(f'  stopping at request ceiling ({args.max_requests})', file=sys.stderr)
+            break
+        if time.monotonic() > deadline:
+            print(f'  stopping at time ceiling ({args.max_minutes:.0f} min) on page {page}; '
+                  f'keeping what was collected', file=sys.stderr)
             break
         try:
             data = api('/bills', jurisdiction=args.state, session=args.session,
