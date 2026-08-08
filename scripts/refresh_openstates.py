@@ -71,7 +71,17 @@ def api(path, **params):
     raise SystemExit('Open States: still rate limited after retries')
 
 
+CHAMBER_ROLE = {'upper': 'Senate', 'lower': 'House'}
+
+
 def chamber_of(org):
+    """Organization is an object {id, name, classification} — prefer the
+    classification, which is reliable across states, and fall back to the name."""
+    if isinstance(org, dict):
+        by_cls = CHAMBER_ROLE.get((org.get('classification') or '').lower())
+        if by_cls:
+            return by_cls
+        org = org.get('name') or ''
     o = (org or '').lower()
     if 'senate' in o: return 'Senate'
     if 'house' in o or 'assembly' in o or 'delegates' in o: return 'House'
@@ -127,13 +137,26 @@ def main():
                 seen[key] = idx
                 rollcalls.append([
                     key[0], bill.get('title', ''), key[1], key[2],
-                    (ve.get('result') or '').capitalize(), chamber_of(ve.get('organization', {}).get('name')),
+                    (ve.get('result') or '').capitalize(), chamber_of(ve.get('organization')),
                 ])
                 for v in ve.get('votes', []) or []:
-                    pid = v.get('voter_id') or 'name:' + (v.get('voter_name', '') or '').replace(' ', '_')
+                    # The API returns the person under `voter` (a CompactPerson),
+                    # NOT a flat `voter_id` — reading voter_id always fell through
+                    # to a name-derived key, which would not match the
+                    # ocd-person ids from the bulk backfill and would have
+                    # created a duplicate roster on every refresh.
+                    voter = v.get('voter') or {}
+                    pid = voter.get('id') or v.get('voter_id')
+                    name = v.get('voter_name') or voter.get('name') or ''
+                    if not pid:
+                        pid = 'name:' + name.replace(' ', '_')
                     votes.setdefault(pid, []).append([idx, OPTION_CODE.get((v.get('option') or '').lower(), 3)])
-                    people.setdefault(pid, {'people_id': pid, 'name': v.get('voter_name', ''),
-                                            'party': '', 'role': '', 'district': ''})
+                    # CompactPerson exposes: id, name, party, current_role
+                    role = (voter.get('current_role') or {})
+                    people.setdefault(pid, {'people_id': pid, 'name': name,
+                                            'party': voter.get('party', ''),
+                                            'role': CHAMBER_ROLE.get(role.get('org_classification', ''), ''),
+                                            'district': str(role.get('district', '') or '')})
                     added_votes += 1
         pagination = data.get('pagination', {})
         if page >= pagination.get('max_page', 1) or not results:
