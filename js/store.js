@@ -9,21 +9,39 @@ const Store = {
   INDEX_KEY: 'artemishera.projects',
 
   _index() {
-    try { return JSON.parse(localStorage.getItem(this.INDEX_KEY) || '[]'); }
-    catch (e) { return []; }
+    try {
+      const v = JSON.parse(localStorage.getItem(this.INDEX_KEY) || '[]');
+      return Array.isArray(v) ? v : [];     // corrupted write must not throw later
+    } catch (e) { return []; }
   },
   _saveIndex(list) { localStorage.setItem(this.INDEX_KEY, JSON.stringify(list)); },
 
   // meta: {id, name, type, status, subject, created, updated, summary}
+  // Payload first, then the index. The reverse order left a ghost entry in the
+  // library whenever the payload write blew the ~5MB localStorage quota — the
+  // project appeared but could never be opened.
   saveProject(meta, payload) {
-    const list = this._index().filter(p => p.id !== meta.id);
     meta.updated = new Date().toISOString();
     meta.created = meta.created || meta.updated;
     meta.origin = 'local';
-    list.unshift(meta);
-    this._saveIndex(list);
+
     if (payload !== undefined) {
-      localStorage.setItem('artemishera.project.' + meta.id, JSON.stringify(payload));
+      try {
+        localStorage.setItem('artemishera.project.' + meta.id, JSON.stringify(payload));
+      } catch (e) {
+        const quota = e && (e.name === 'QuotaExceededError' || e.code === 22);
+        throw new Error(quota
+          ? 'Browser storage is full — this report is too large to save. Export an older project and delete it from Projects to free space.'
+          : 'Could not save this project: ' + e.message);
+      }
+    }
+    const list = this._index().filter(p => p.id !== meta.id);
+    list.unshift(meta);
+    try {
+      this._saveIndex(list);
+    } catch (e) {
+      localStorage.removeItem('artemishera.project.' + meta.id);   // don't orphan the payload
+      throw new Error('Browser storage is full — could not update the project list.');
     }
     return meta;
   },

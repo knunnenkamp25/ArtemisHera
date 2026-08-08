@@ -144,23 +144,40 @@ function patternStrength(p) {
 // lowercased name as a single phrase (len >= 6 avoids noisy short-word names).
 // User-trained rules (pins add patterns, bans remove them) are applied on top —
 // see MatchRules in util.js.
+const _patternCache = new Map();
 function universePatterns(name) {
+  // Cached because scoreModelMatch calls this once per keyword per universe —
+  // ~2M calls on a large report, each otherwise allocating fresh arrays.
+  // MatchRules.version() changes whenever a pin/ban is saved, invalidating it.
+  const key = (typeof MatchRules !== 'undefined' ? MatchRules.version() : 0) + '|' + name;
+  const hit = _patternCache.get(key);
+  if (hit) return hit;
   let base = UNIVERSE_KEYWORDS[name];
   if (!base) {
     const low = (name || '').toLowerCase();
     base = low.length >= 6 ? [low] : [];
   }
-  if (typeof MatchRules !== 'undefined') return MatchRules.apply(name, base);
-  return base;
+  const out = (typeof MatchRules !== 'undefined') ? MatchRules.apply(name, base) : base;
+  _patternCache.set(key, out);
+  return out;
 }
 
 // Substring matching is fine for long phrases but poisons short ones —
 // 'ssi' hits "commission", 'ada ' hits "Canada". Patterns under 5 chars
 // must match on word boundaries.
+// Short patterns need word-boundary matching ('ssi' must not hit 'commission').
+// The compiled regex is cached: this runs tens of millions of times on a large
+// vote report, and recompiling per call dominated the profile.
+const _patternRx = new Map();
 function patternHit(hay, pattern) {
   const p = pattern.trim();
   if (p.length >= 5) return hay.includes(pattern);
-  return new RegExp('\\b' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(hay);
+  let rx = _patternRx.get(p);
+  if (!rx) {
+    rx = new RegExp('\\b' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
+    _patternRx.set(p, rx);
+  }
+  return rx.test(hay);
 }
 
 // ── Legislative stop words (tuned for bill language) ───────────────────────

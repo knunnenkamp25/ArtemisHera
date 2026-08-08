@@ -193,20 +193,35 @@ const Votes = {
   // A lone generic word is not enough — that's what made matching loose.
   matchVotesToTopics(voteRecords, universes) {
     const results = [];
+    // Build each vote's haystack ONCE. Previously this was rebuilt inside the
+    // universe loop — 211 universes x 20k votes = 4.2M redundant joins and
+    // toLowerCase calls on long strings, which froze the main thread.
+    const hays = voteRecords.map(v =>
+      ((v.description || '') + ' ' + (v.keywords || []).join(' ')).toLowerCase());
+
     for (const model of universes) {
       const patterns = universePatterns(model);
       if (!patterns.length) continue;
+      // Strength is a property of the pattern, not the vote — resolve up front.
+      const strengths = patterns.map(p => effectiveStrength(model, p));
       let yes = 0, no = 0, other = 0, strongMatches = 0;
       const matchedKeywords = new Set();
-      for (const v of voteRecords) {
-        const hay = ((v.description || '') + ' ' + (v.keywords || []).join(' ')).toLowerCase();
-        const hits = patterns.filter(p => patternHit(hay, p));
-        if (!hits.length) continue;
-        const strongHit = hits.find(p => effectiveStrength(model, p) === 'strong');
+      for (let vi = 0; vi < voteRecords.length; vi++) {
+        const v = voteRecords[vi];
+        const hay = hays[vi];
+        let strongHit = null, weakStems = null, hitCount = 0;
+        const hits = [];
+        for (let pi = 0; pi < patterns.length; pi++) {
+          if (!patternHit(hay, patterns[pi])) continue;
+          hitCount++;
+          if (hits.length < 3) hits.push(patterns[pi]);
+          if (strengths[pi] === 'strong') { strongHit = patterns[pi]; break; }
+          (weakStems || (weakStems = new Set())).add(patterns[pi].trim().slice(0, 4));
+        }
+        if (!hitCount) continue;
         // Weak hits only count as independent evidence when they're different
         // words — "child" + "children" is one signal, not two.
-        const weakStems = new Set(hits.filter(p => effectiveStrength(model, p) === 'weak').map(p => p.trim().slice(0, 4)));
-        if (!strongHit && weakStems.size < 2) continue;
+        if (!strongHit && (!weakStems || weakStems.size < 2)) continue;
         if (strongHit) strongMatches++;
         hits.slice(0, 3).forEach(h => matchedKeywords.add(h));
         if (v.member_vote === 'Yes') yes++;

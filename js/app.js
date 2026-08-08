@@ -150,10 +150,16 @@ const App = {
       });
     });
 
-    $('#view').addEventListener('click', e => { if (!e.target.closest('.dd-wrap')) $('#fv-dd')?.classList.remove('open'); });
+    // Bind to elements inside #view, never to #view itself: #view persists
+    // across routes, so container listeners accumulated on every visit and a
+    // single Load Votes click eventually fired several stale handlers at once,
+    // launching duplicate scrapes.
+    document.addEventListener('click', this._ddClose = e => {
+      if (!e.target.closest('.dd-wrap')) $('#fv-dd')?.classList.remove('open');
+    });
 
-    $('#view').addEventListener('click', async e => {
-      if (e.target.id !== 'fv-run' || !selected) return;
+    $('#fv-run').addEventListener('click', async e => {
+      if (!selected) return;
       const from = Math.min(+$('#fv-from').value, +$('#fv-to').value);
       const to = Math.max(+$('#fv-from').value, +$('#fv-to').value);
       const opts = { chamber: $('#fv-chamber').value, congressFrom: from, congressTo: to };
@@ -440,9 +446,16 @@ const App = {
       const { pool, stSel, dmaSel } = selected();
       if (!pool.length) return;
       const geo = dmaSel.length ? dmaSel.join(' + ') : stSel.join(', ');
+      // Send the SELECTION, not the resolved URLs: a full-state pick is
+      // thousands of URLs (~110 KB), far past GitHub's workflow_dispatch input
+      // limit. The workflow re-resolves them from data/news_sites.json.
       this.launchScrapeFlow({
         projectName: $('#ns-name').value.trim() || `${geo} News — ${new Date().toLocaleDateString()}`,
-        urls: pool.map(s => s.url),
+        urls: [],
+        states: stSel.join(','),
+        dmas: dmaSel.join('|'),
+        types: [...activeTypes].join('|'),
+        outletCount: pool.length,
         stance: this.stance(),
         mode: 'news',
         geography: geo,
@@ -766,8 +779,11 @@ const App = {
       if (cloud) {
         meta.status = 'complete';
         meta.summary = `${cloud.votes.length} votes · cloud run`;
-        Store.saveProject(meta, cloud);
         payload = cloud;
+        // Caching is best-effort: a quota failure must still render the report
+        // rather than reject out of the router with a blank screen.
+        try { Store.saveProject(meta, cloud); }
+        catch (e) { console.warn('Could not cache cloud report locally:', e.message); }
       } else if (meta.status === 'running') return this.pendingCloudVotes(meta);
     }
     if (!payload) return this.notFound('This project\'s data is not in this browser. Import its .artemishera.json export from the Projects page.');
@@ -834,8 +850,8 @@ const App = {
     $('#pr-list').innerHTML = projects.length ? `<div class="proj-grid">${projects.map(p => `
       <div class="card proj-card" onclick="location.hash='#/report/${p.id}'">
         <div class="top">
-          <span class="type-tag ${typeCls[p.type] || 'docs'}">${typeName[p.type] || p.type}</span>
-          <span class="status-dot ${p.status || 'complete'}" title="${p.status}"></span>
+          <span class="type-tag ${typeCls[p.type] || 'docs'}">${esc(typeName[p.type] || p.type)}</span>
+          <span class="status-dot ${['complete','running','failed','draft'].includes(p.status) ? p.status : 'complete'}" title="${esc(p.status || '')}"></span>
           <span style="flex:1"></span>
           <span style="font-size:11px;color:var(--tan)">${p.origin === 'repo' ? 'cloud' : 'local'}</span>
         </div>

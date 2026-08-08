@@ -48,18 +48,41 @@ def identity(zf):
 
 
 def chamber_map(zf):
-    """organization_id -> 'House' | 'Senate' | ''"""
-    out = {}
-    for o in read_csv(zf, '_organizations.csv'):
-        name = (o.get('name') or '').lower()
+    """organization_id -> 'House' | 'Senate' | ''
+
+    Most votes in many states happen in committees, whose own classification is
+    'committee' — the chamber is its parent. Walk the parent chain to resolve
+    those; without this, ~41% of rollcalls came through with no chamber.
+    Unicameral bodies (Nebraska, DC) legitimately resolve to ''.
+    """
+    orgs = {o['id']: o for o in read_csv(zf, '_organizations.csv') if o.get('id')}
+
+    def own_chamber(o):
         cls = (o.get('classification') or '').lower()
-        ch = ''
-        if 'senate' in name or cls == 'upper':
-            ch = 'Senate'
-        elif any(w in name for w in ('house', 'assembly', 'delegates')) or cls == 'lower':
-            ch = 'House'
-        out[o.get('id')] = ch
-    return out
+        if cls == 'upper':
+            return 'Senate'
+        if cls == 'lower':
+            return 'House'
+        name = (o.get('name') or '').lower()
+        if 'senate' in name:
+            return 'Senate'
+        if any(w in name for w in ('house', 'assembly', 'delegates')):
+            return 'House'
+        return ''
+
+    resolved = {}
+
+    def resolve(oid, depth=0):
+        if oid in resolved:
+            return resolved[oid]
+        o = orgs.get(oid)
+        if not o or depth > 6:            # missing org, or a parent cycle
+            return ''
+        ch = own_chamber(o) or resolve(o.get('parent_id'), depth + 1)
+        resolved[oid] = ch
+        return ch
+
+    return {oid: resolve(oid) for oid in orgs}
 
 
 def pack(zip_path, base, force=False):

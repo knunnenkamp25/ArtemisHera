@@ -465,6 +465,13 @@ const Hera = {
           `<button class="${this.state.tab === id ? 'active' : ''}" onclick="Hera.state.tab='${id}';Hera.renderCampaign()">${name}</button>`).join('')}
       </div>
       <div id="hera-tabbody">${this.renderTab()}</div>`;
+    // Delegated copy: the payload rides in a data attribute (HTML-escaped by
+    // esc and decoded by the parser) rather than through a JS-string onclick,
+    // which cannot be safely escaped with esc alone.
+    $('#hera-out').addEventListener('click', e => {
+      const b = e.target.closest('[data-copy]');
+      if (b) this.copy(b, b.dataset.copy);
+    });
     $('#hera-out').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
 
@@ -519,7 +526,7 @@ const Hera = {
       <div class="card sample">
         <div class="s-head"><span>Email</span><span class="aud">→ ${esc(e.audience)}</span></div>
         <div class="s-body"><div class="subj">Subject: ${esc(e.subject_line)}</div><div style="color:var(--bark);font-size:12px;margin-bottom:10px">Preview: ${esc(e.preview)}…</div>${esc(e.body)}</div>
-        <div class="s-foot"><button class="btn ghost sm" onclick="Hera.copy(this, ${JSON.stringify(e.subject_line + '\n\n' + e.body).replace(/"/g, '&quot;')})">Copy</button></div>
+        <div class="s-foot"><button class="btn ghost sm" data-copy="${esc(e.subject_line + '\n\n' + e.body)}">Copy</button></div>
       </div>`).join('')}</div>`;
   },
 

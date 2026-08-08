@@ -11,12 +11,25 @@ on:
         description: 'Human-readable project name'
         required: true
       urls:
-        description: 'Newline-separated list of URLs to scrape'
-        required: true
+        description: 'Newline-separated URLs (web mode only, capped at 5)'
+        required: false
+        default: ''
       mode:
-        description: 'news (geography selection, no cap) or web (manual pages, capped at 5)'
+        description: 'news (resolve from geography) or web (manual pages)'
         required: false
         default: 'web'
+      states:
+        description: 'news mode: comma-separated state abbreviations'
+        required: false
+        default: ''
+      dmas:
+        description: 'news mode: pipe-separated DMA names (empty = all in states)'
+        required: false
+        default: ''
+      types:
+        description: 'news mode: pipe-separated outlet types (empty = all)'
+        required: false
+        default: ''
       days:
         description: 'Look-back days (0 = bulk scrape)'
         required: false
@@ -46,6 +59,9 @@ jobs:
         env:
           URLS: ${{ inputs.urls }}
           MODE: ${{ inputs.mode }}
+          STATES: ${{ inputs.states }}
+          DMAS: ${{ inputs.dmas }}
+          TYPES: ${{ inputs.types }}
           DAYS: ${{ inputs.days }}
           MAXA: ${{ inputs.max_articles }}
           PID: ${{ inputs.project_id }}
@@ -53,13 +69,33 @@ jobs:
           mkdir -p data/news
           ARGS="--export-json data/news/${PID}.json --max-articles ${MAXA} -o /tmp/${PID}.xlsx"
           if [ "${DAYS}" != "0" ]; then ARGS="$ARGS --today --days ${DAYS}"; fi
-          if [ -z "${URLS}" ]; then echo "No URLs provided" && exit 1; fi
+
           if [ "${MODE}" = "web" ]; then
-            echo "${URLS}" | head -5 > /tmp/urls.txt   # manual page scrape stays capped
+            if [ -z "${URLS}" ]; then echo "web mode requires urls" && exit 1; fi
+            echo "${URLS}" | head -5 > /tmp/urls.txt          # manual scrape stays capped
           else
-            echo "${URLS}" > /tmp/urls.txt             # geography selection: full list
+            # Resolve the geography here rather than shipping thousands of URLs
+            # through workflow_dispatch inputs, which are size-capped.
+            python - <<'EOF' > /tmp/urls.txt
+          import json, os
+          sites = json.load(open('data/news_sites.json'))
+          states = {s.strip() for s in os.environ.get('STATES','').split(',') if s.strip()}
+          dmas   = {d.strip() for d in os.environ.get('DMAS','').split('|') if d.strip()}
+          types  = {t.strip() for t in os.environ.get('TYPES','').split('|') if t.strip()}
+          out = []
+          for s in sites:
+              if states and s['state'] not in states: continue
+              if types  and s['type']  not in types:  continue
+              # a chosen DMA, or a statewide outlet with no DMA of its own
+              if dmas and s['dma'] and s['dma'] not in dmas: continue
+              out.append(s['url'])
+          print('\n'.join(dict.fromkeys(out)))
+          EOF
           fi
-          echo "Scraping $(grep -c . /tmp/urls.txt) sites (mode=${MODE})"
+
+          COUNT=$(grep -c . /tmp/urls.txt || echo 0)
+          echo "Resolved ${COUNT} sites (mode=${MODE} states=${STATES} dmas=${DMAS})"
+          if [ "${COUNT}" -eq 0 ]; then echo "No sites matched the selection" && exit 1; fi
           python scripts/news_scraper.py -f /tmp/urls.txt $ARGS
 
       - name: Update project manifest

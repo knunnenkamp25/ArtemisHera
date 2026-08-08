@@ -6,12 +6,15 @@
    ========================================================================= */
 
 const News = {
-  async launchScrape({ projectName, urls = [], mode = 'web', geography = '', stance = 'oppose', days = 2, maxArticles = 50 }) {
+  async launchScrape({ projectName, urls = [], states = '', dmas = '', types = '',
+                       outletCount = 0, mode = 'web', geography = '', stance = 'oppose',
+                       days = 2, maxArticles = 50 }) {
     const projectId = 'scr-' + uid();
     await GH.dispatchScrape({
       project_id: projectId,
       project_name: projectName,
-      urls: urls.join('\n'),
+      urls: urls.join('\n'),      // manual web scrape only (max 5)
+      states, dmas, types,          // geography mode: workflow resolves the URLs
       mode,
       days: String(days),
       max_articles: String(maxArticles),
@@ -25,7 +28,7 @@ const News = {
       status: 'running',
       subject: mode === 'news' ? geography : urls.map(u => u.replace(/^https?:\/\//, '').split('/')[0]).join(', '),
       summary: mode === 'news'
-        ? `${urls.length} outlets · ${geography}`
+        ? `${outletCount} outlets · ${geography}`
         : `${urls.length} page${urls.length > 1 ? 's' : ''} queued`,
     });
     return projectId;

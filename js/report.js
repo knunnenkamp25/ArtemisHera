@@ -81,6 +81,11 @@ const Report = {
         this.applyOppoFilters();
       });
     });
+    // Delegated expand handler (keeps attack data out of inline handlers)
+    $('#rp-body').addEventListener('click', e => {
+      const btn = e.target.closest('.expand-btn[data-row]');
+      if (btn) $(`#rp-body [data-detail="${btn.dataset.row}"]`)?.classList.toggle('open');
+    });
     $$('#view th[data-sort]').forEach(th => {
       th.onclick = () => {
         const col = th.dataset.sort;
@@ -127,19 +132,26 @@ const Report = {
     const st = this.state, PER = 25;
     const start = (st.page - 1) * PER;
     const rows = st.filtered.slice(start, start + PER);
-    $('#rp-body').innerHTML = rows.map((a, i) => `
+    // Row indices drive expansion via a delegated handler — never interpolate
+    // attack fields into an onclick, and never trust severity to be a string:
+    // both can come from an imported attacks.json or .artemishera.json.
+    $('#rp-body').innerHTML = rows.map((a, i) => {
+      const sev = String(a.severity || 'Minor');
+      const sevCls = SEVERITY_ORDER.includes(sev) ? sev.toLowerCase() : 'niche';
+      return `
       <tr class="${i % 2 ? 'alt' : ''}">
-        <td class="expand-btn" onclick="document.getElementById('det-${a.number}').classList.toggle('open')">▸</td>
-        <td>${a.number}</td>
+        <td class="expand-btn" data-row="${i}">▸</td>
+        <td>${esc(a.number)}</td>
         <td>${esc(a.category)}</td>
         <td>${esc(a.attack)}</td>
-        <td><span class="badge ${a.severity.toLowerCase()}">${a.severity}</span></td>
+        <td><span class="badge ${sevCls}">${esc(sev)}</span></td>
         <td>${this.pills(a)}</td>
       </tr>
-      <tr class="detail-row" id="det-${a.number}"><td colspan="6" class="detail-cell">
+      <tr class="detail-row" data-detail="${i}"><td colspan="6" class="detail-cell">
         <h4>Key Detail</h4><p>${esc(a.key_detail || 'No additional detail.')}</p>
         ${a.notes ? `<h4>Notes</h4><p>${esc(a.notes)}</p>` : ''}
-      </td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--bark)">No attacks match the current filters.</td></tr>';
+      </td></tr>`;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--bark)">No attacks match the current filters.</td></tr>';
 
     $('#rp-count').textContent = `${st.filtered.length} of ${st.attacks.length} attacks`;
     const pages = Math.ceil(st.filtered.length / PER);
@@ -206,13 +218,18 @@ const Report = {
     this.state = { meta, votes, topics, keywords, vFiltered: [...votes], vPage: 1 };
     const yes = votes.filter(v => v.member_vote === 'Yes').length;
     const no = votes.filter(v => v.member_vote === 'No').length;
-    const partyCls = (member.party || '').startsWith('Dem') ? 'dem' : (member.party || '').startsWith('Rep') ? 'rep' : 'ind';
+    // Open States bulk archives carry vote records but no party/district, so
+    // party is often unknown. Render nothing rather than an empty or
+    // misleadingly-styled tag.
+    const p = (member.party || '').trim();
+    const partyCls = /^dem/i.test(p) ? 'dem' : /^rep/i.test(p) ? 'rep' : 'ind';
+    const partyTag = p ? `<span class="tag ${partyCls}">${esc(p)}</span>` : '';
 
     $('#view').innerHTML = `
       ${this.crumbs(meta.name)}
       <h1 class="page-title">${esc(member.name)}</h1>
       <div class="page-sub">
-        <span class="tag ${partyCls}">${esc(member.party || '')}</span>
+        ${partyTag}
         <span class="stance-tag ${meta.stance === 'support' ? 'support' : 'oppose'}">${meta.stance === 'support' ? '▲ Supporting' : '▼ Opposing'}</span>
         &nbsp;${esc(member.state || member.district || '')} · ${esc(meta.summary || '')} · Generated ${fmtDate(meta.updated)}
       </div>
@@ -457,7 +474,7 @@ const Report = {
     $('#nw-count').textContent = `${st.filtered.length} of ${st.articles.length} articles`;
     $('#nw-list').innerHTML = st.filtered.slice(0, 200).map(a => `
       <div class="card article-card">
-        <h3><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.title)}</a></h3>
+        <h3><a href="${esc(safeUrl(a.url))}" target="_blank" rel="noopener">${esc(a.title)}</a></h3>
         <div class="meta">${esc(a.source_site)}${a.date_published ? ' · ' + esc(a.date_published) : ''}${a.author ? ' · ' + esc(a.author) : ''}</div>
         <div class="body">${esc((a.body || '').slice(0, 300))}${(a.body || '').length > 300 ? '…' : ''}</div>
       </div>`).join('') || '<div class="empty"><div class="glyph">◌</div>No articles match.</div>';

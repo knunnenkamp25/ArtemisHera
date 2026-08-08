@@ -94,9 +94,16 @@ const MatchRules = {
       return { pins: r.pins || [], bans: r.bans || [] };
     } catch (e) { return { pins: [], bans: [] }; }
   },
+  _version: 0,
+  version() { return this._version; },
   save(rules) {
-    localStorage.setItem(this.KEY, JSON.stringify(rules));
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(rules));
+    } catch (e) {
+      console.warn('Could not save match rules:', e.message);
+    }
     this._cache = null;
+    this._version++;          // invalidates universePatterns cache
   },
 
   _cache: null,
@@ -330,6 +337,14 @@ async function loadUniverses() {
 const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 
+// Only http(s) survives — scraped data must never yield a javascript: link.
+function safeUrl(u) {
+  try {
+    const parsed = new URL(u, location.href);
+    return /^https?:$/.test(parsed.protocol) ? parsed.href : '#';
+  } catch (e) { return '#'; }
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -362,7 +377,15 @@ function loadScript(src) {
   if (_loadedScripts[src]) return _loadedScripts[src];
   _loadedScripts[src] = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Failed to load ' + src));
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => {
+      // Don't cache the rejection — one CDN blip would otherwise poison this
+      // script for the rest of the session with no way to retry.
+      delete _loadedScripts[src];
+      s.remove();
+      reject(new Error('Failed to load ' + src));
+    };
     document.head.appendChild(s);
   });
   return _loadedScripts[src];
