@@ -120,6 +120,7 @@ def main():
     print(f'{args.state} {args.session}: bills updated since {since}', file=sys.stderr)
 
     page, added_votes = 1, 0
+    bills_seen = vote_events_seen = dupes = 0
     while True:
         if _requests >= args.max_requests:
             print(f'  stopping at request ceiling ({args.max_requests})', file=sys.stderr)
@@ -127,11 +128,20 @@ def main():
         data = api('/bills', jurisdiction=args.state, session=args.session,
                    updated_since=since, include='votes', page=page, per_page=20)
         results = data.get('results', [])
+        bills_seen += len(results)
+        if page == 1:
+            pg = data.get('pagination', {})
+            print(f"  query -> jurisdiction={args.state} session={args.session} "
+                  f"updated_since={since}", file=sys.stderr)
+            print(f"  API reports {pg.get('total_items', '?')} matching bills "
+                  f"across {pg.get('max_page', '?')} pages", file=sys.stderr)
         for bill in results:
             for ve in bill.get('votes', []) or []:
+                vote_events_seen += 1
                 key = (bill.get('identifier', '').replace(' ', ''),
                        (ve.get('start_date') or '')[:10], ve.get('motion_text', ''))
                 if key in seen:
+                    dupes += 1
                     continue
                 idx = len(rollcalls)
                 seen[key] = idx
@@ -164,8 +174,17 @@ def main():
         page += 1
 
     new_rollcalls = len(rollcalls) - start_count
+    print(f'  scanned {bills_seen} bills, {vote_events_seen} vote events '
+          f'({dupes} already stored, {new_rollcalls} new) in {_requests} API requests',
+          file=sys.stderr)
     if not new_rollcalls:
-        print(f'No new rollcalls ({_requests} API requests used)', file=sys.stderr)
+        if vote_events_seen:
+            print('No new rollcalls — everything returned was already stored. '
+                  'Fetch and dedup both verified.', file=sys.stderr)
+        else:
+            print('No vote events returned at all. Either nothing was updated in '
+                  'this window, or the session id does not match what the API '
+                  'expects — widen --since to confirm.', file=sys.stderr)
         return
 
     os.makedirs(out_dir, exist_ok=True)
