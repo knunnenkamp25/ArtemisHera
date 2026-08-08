@@ -29,7 +29,10 @@ const CONFIG = {
   // no proxy. Set STATE_DATA_LOCAL to prefer an in-repo copy (dev, or a small
   // committed subset) and fall back to the data repo when a session is missing.
   STATE_DATA_BASE: 'https://raw.githubusercontent.com/knunnenkamp25/ArtemisHera-data/main/data/state',
-  STATE_DATA_LOCAL: 'data/state',
+  // Optional in-repo override, empty by default. A partial local copy would
+  // shadow the full index in the data repo, so only set this when you
+  // deliberately want to test against local data.
+  STATE_DATA_LOCAL: '',
 };
 
 const CAST_CODES = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};
