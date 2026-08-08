@@ -30,6 +30,25 @@ OPTION_CODE = {'yes': 1, 'no': 2, 'abstain': 3, 'other': 3, 'not voting': 4,
                'absent': 4, 'excused': 4, 'paired': 3}
 
 
+def write_if_changed(path, payload):
+    """Only touch the file when its content actually differs.
+
+    A full repack used to rewrite all ~1,150 files unconditionally, so a fix
+    touching one field added another few hundred MB to git history forever.
+    Comparing first means a no-op repack produces an empty diff, and a targeted
+    fix only rewrites the sessions it actually affects.
+    """
+    body = json.dumps(payload, separators=(',', ':'))
+    try:
+        if open(path).read() == body:
+            return False
+    except FileNotFoundError:
+        pass
+    with open(path, 'w') as f:
+        f.write(body)
+    return True
+
+
 def read_csv(zf, suffix):
     for name in zf.namelist():
         if name.endswith(suffix) and not name.startswith('__MACOSX'):
@@ -134,7 +153,7 @@ def pack(zip_path, base, force=False):
     for fname, payload in (('people.json', sorted(people.values(), key=lambda p: p['name'])),
                            ('rollcalls.json', rollcalls),
                            ('votes.json', votes)):
-        json.dump(payload, open(os.path.join(out_dir, fname), 'w'), separators=(',', ':'))
+        write_if_changed(os.path.join(out_dir, fname), payload)
 
     years = sorted({r[2][:4] for r in rollcalls if r[2][:4].isdigit()})
     update_index(base, state, session, len(people), years)

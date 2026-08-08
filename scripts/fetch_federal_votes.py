@@ -27,19 +27,9 @@ BASES = [
     'https://voteview.com/static/data/out',
     'https://voteview.polisci.ucla.edu/static/data/out',
 ]
-CAST_CODES = {1: 'Yes', 2: 'Yes', 3: 'Yes', 4: 'No', 5: 'No', 6: 'No',
-              7: 'Present', 8: 'Present', 9: 'Not Voting'}
+CAST_CODES = {}   # populated by load_matching()
 PARTY_CODES = {'100': 'Democratic', '200': 'Republican', '328': 'Independent'}
 
-STOP = set("""a an the of to for in on and or by with from at is it be as that this which act bill
-resolution provide providing amend relating united states america congress house senate section
-purpose purposes other certain establish authorize making regarding concerning department federal
-require general agreeing agreed passage motion table suspend rules stat app cong sess under title
-joint submitted chapter code proceed upon cloture nomination confirmation invoke invoking calendar
-consideration referred clerk thereof shall may such not into been has have would further than its
-all secretary virginia florida texas california ohio new york pennsylvania georgia illinois michigan
-north carolina south carolina arizona colorado missouri indiana iowa oregon utah district columbia
-judge circuit court""".split())
 
 
 def fetch(path):
@@ -61,53 +51,45 @@ def extract_keywords(text):
     return sorted(set(words))
 
 
-def load_topic_keywords():
-    """Mirror the browser's unified universe matching from js/data.js.
+def load_matching():
+    """Load the shared matching dictionary (generated from js/data.js by
+    scripts/build_matching_dict.py). Previously this string-split js/data.js at
+    runtime and kept hand-copied duplicates of CAST_CODES and the stop words —
+    any rename or reformat silently gave the cloud a different keyword set than
+    the browser."""
+    path = os.path.join(os.path.dirname(__file__), '..', 'data', 'matching.json')
+    try:
+        d = json.load(open(path))
+    except FileNotFoundError:
+        raise SystemExit('data/matching.json is missing — run '
+                         'scripts/build_matching_dict.py and commit it.')
 
-    Every universe in POSEIDON_UNIVERSES gets a pattern list: the curated
-    UNIVERSE_KEYWORDS entry when one exists, otherwise the full lowercased
-    name as a single phrase (len >= 6) — same rules as universePatterns().
-    Note: the server can't see a user's sheet override (it lives in browser
-    localStorage), so cloud runs always match against the bundled list.
-    """
-    root = os.path.join(os.path.dirname(__file__), '..')
-    src = open(os.path.join(root, 'js', 'data.js')).read()
+    global ANCHORS, STOP, CAST_CODES, PINNED
+    ANCHORS = set(d['anchor_words'])
+    STOP = set(d['stop_words'])
+    CAST_CODES = {int(k): v for k, v in d['cast_codes'].items()}
 
-    block = src.split('const UNIVERSE_KEYWORDS = {', 1)[1].split('\n};', 1)[0]
-    curated = {}
-    for line in block.splitlines():
-        m = re.match(r"\s*'([^']+)':\s*\[(.*)\],\s*$", line)
-        if m:
-            curated[m.group(1)] = re.findall(r"'([^']*)'", m.group(2))
-
-    uni_block = src.split('const POSEIDON_UNIVERSES = [', 1)[1].split('];', 1)[0]
-    universes = re.findall(r"'([^']+)'", uni_block)
-
-    anchor_block = src.split('const ANCHOR_WORDS = new Set([', 1)[1].split(']);', 1)[0]
-    global ANCHORS
-    ANCHORS = set(re.findall(r"'([^']+)'", anchor_block))
-
+    curated = d['universe_keywords']
     topics = {}
-    for name in universes:
+    for name in d['universes']:
         if name in curated:
             topics[name] = list(curated[name])
         elif len(name) >= 6:
             topics[name] = [name.lower()]
 
-    # User-trained rules, committed to the repo from Settings → Export
-    global PINNED
+    # User-trained rules, committed from Settings -> Export
     PINNED = set()
-    rules_path = os.path.join(root, 'data', 'match_rules.json')
+    rules_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'match_rules.json')
     try:
         rules = json.load(open(rules_path))
         for b in rules.get('bans', []):
             if b['universe'] in topics and b['kw'] in topics[b['universe']]:
                 topics[b['universe']].remove(b['kw'])
-        for p in rules.get('pins', []):
-            topics.setdefault(p['universe'], [])
-            if p['kw'] not in topics[p['universe']]:
-                topics[p['universe']].append(p['kw'])
-            PINNED.add((p['universe'], p['kw']))
+        for pin in rules.get('pins', []):
+            topics.setdefault(pin['universe'], [])
+            if pin['kw'] not in topics[pin['universe']]:
+                topics[pin['universe']].append(pin['kw'])
+            PINNED.add((pin['universe'], pin['kw']))
         n = len(rules.get('pins', [])) + len(rules.get('bans', []))
         if n:
             print(f'Applied {n} match rules from data/match_rules.json', file=sys.stderr)
@@ -117,6 +99,7 @@ def load_topic_keywords():
 
 
 ANCHORS = set()
+STOP = set()
 PINNED = set()
 
 
@@ -278,7 +261,7 @@ def main():
 
     print('Loading votes…', file=sys.stderr)
     records = load_votes(icpsrs, args.congress_from, args.congress_to, args.chamber)
-    topics_dict = load_topic_keywords()
+    topics_dict = load_matching()
 
     payload = {
         'member': member,
