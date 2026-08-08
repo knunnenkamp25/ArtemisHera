@@ -89,6 +89,23 @@ function parseCSVLine(line) {
   return result;
 }
 
+// Row-at-a-time CSV with an optional filter, so a multi-million-row Voteview
+// file never becomes a multi-million-element array of objects. #7.
+function parseCSVFiltered(text, keep) {
+  const lines = text.split(/\r?\n/);
+  if (!lines.length) return [];
+  const headers = parseCSVLine(lines[0]).map(h => h.trim());
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const vals = parseCSVLine(lines[i]);
+    const row = {};
+    for (let h = 0; h < headers.length; h++) row[headers[h]] = (vals[h] || '').trim();
+    if (!keep || keep(row)) out.push(row);
+  }
+  return out;
+}
+
 function parseCSV(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (!lines.length) return [];
@@ -204,14 +221,31 @@ function effectiveStrength(universe, pattern) {
 }
 
 // ── Tiered universe matching (primary / secondary / tertiary) ──────────────
+// Tiers: exact > contained-in-a-phrase > shared stem.
+//
+// The old tertiary tier was unreachable. extractKeywords() splits on \W+, so a
+// keyword is always ONE token; the old test ("some pattern word equals the
+// keyword") was already satisfied by the secondary substring check, which
+// returned first. Zero tertiary assignments existed across every report.
+// Redefined as a genuine morphological near-match, which is what the tier was
+// meant to express.
 function scoreModelMatch(kwLower, universe) {
   const patterns = universePatterns(universe);
   for (const p of patterns) if (p === kwLower) return 'primary';
-  for (const p of patterns) if (p.includes(kwLower) || kwLower.includes(p)) return 'secondary';
-  const kwWords = kwLower.split(/\s+/);
+  // Whole-word containment inside a multi-word pattern ("housing" in
+  // "affordable housing"), not bare substring — 'ssi' must not match 'commission'.
   for (const p of patterns) {
-    const pw = p.split(/\s+/);
-    if (kwWords.some(w => pw.includes(w))) return 'tertiary';
+    if (p.includes(' ') && p.split(/\s+/).includes(kwLower)) return 'secondary';
+    if (p === kwLower) return 'secondary';
+  }
+  // Tertiary: a real morphological variant (vote/votes/voting, county/counties).
+  // Reuses wordVariants rather than a loose shared-prefix test — a prefix rule
+  // fired on ~45% of all keywords, which is noise, not a signal.
+  const variants = new Set(wordVariants(kwLower));
+  for (const p of patterns) {
+    for (const w of p.split(/\s+/)) {
+      if (w !== kwLower && (variants.has(w) || wordVariants(w).includes(kwLower))) return 'tertiary';
+    }
   }
   return null;
 }
@@ -262,16 +296,12 @@ function matchTextToUniverses(text, index, n = 3) {
   const low = ' ' + (text || '').toLowerCase() + ' ';
   const scores = new Map();
   for (const u of index) {
-    let score = 0;
-    const seenStems = new Set();
-    for (const p of universePatterns(u.name)) {
-      const stem = p.trim().slice(0, 4);
-      if (seenStems.has(stem) || !patternHit(low, p)) continue;
-      seenStems.add(stem);
-      score += effectiveStrength(u.name, p) === 'strong' ? 2 : 1;
-    }
-    if (u.norm.length >= 6 && low.includes(u.norm)) score += 2;   // name itself appears
-    if (score >= 2) scores.set(u.name, score);
+    const hits = universePatterns(u.name).filter(p => patternHit(low, p));
+    const v = evidenceVerdict(u.name, hits);
+    // The universe name appearing verbatim is itself a strong signal.
+    const nameHit = u.norm.length >= 6 && low.includes(u.norm);
+    if (!v.matched && !nameHit) continue;
+    scores.set(u.name, v.score + (nameHit ? 2 : 0));
   }
   return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 }
@@ -385,12 +415,17 @@ function fmtDate(d) {
 function uid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7); }
 
 function downloadFile(filename, content, mime = 'text/plain') {
+  // Firefox requires the anchor to be in the document for a programmatic
+  // download click, and revoking synchronously races the download start.
   const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
 }
 
 function toCSV(rows, headers) {
@@ -539,4 +574,19 @@ function debounce(fn, ms = 200) {
 
 // #26: bump `updated` only when the payload actually changes, so merely opening
 // a report no longer rewrites its timestamp and jumps it to the top of the list.
+// Read a repo-committed JSON file: the deployed Pages copy first, then
+// raw.githubusercontent (fresher right after a workflow commit). Was duplicated
+// verbatim in Votes.fetchCloudVotes and News.fetchResults. #31.
+async function fetchRepoJSON(path) {
+  const bust = `?t=${Date.now()}`;
+  for (const url of [path + bust,
+                     `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/${path}${bust}`]) {
+    try {
+      const r = await fetchTimed(url, {}, 20000);
+      if (r.ok) return await r.json();
+    } catch (e) { /* try the next source */ }
+  }
+  return null;
+}
+
 function fmtMB(bytes) { return (bytes / 1e6).toFixed(1) + ' MB'; }

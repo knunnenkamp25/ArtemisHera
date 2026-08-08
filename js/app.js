@@ -786,8 +786,33 @@ const App = {
   async rerunScrape(projectId) {
     const meta = Store.getMeta(projectId) || (await Store.repoProjects()).find(p => p.id === projectId);
     if (!meta) return;
-    // Relaunch with same params if we stored them; otherwise send user to setup
-    location.hash = meta.type === 'web-scrape' ? '#/setup/web' : '#/setup/news';
+    const pm = meta.params;
+    if (!pm) {
+      // Older projects predate parameter capture — fall back to the setup page.
+      location.hash = meta.type === 'web-scrape' ? '#/setup/web' : '#/setup/news';
+      return;
+    }
+    if (!GH.hasToken()) return this.promptForToken(() => this.rerunScrape(projectId));
+    showModal('Re-run this scrape', `
+      <p>Launch the same scrape again?</p>
+      <p style="margin-top:8px;color:var(--bark);font-size:13px">${esc(meta.summary || '')}${pm.days ? ` · last ${pm.days} days` : ''}</p>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button class="btn gold" id="rr-go">Re-run</button>
+        <button class="btn ghost" onclick="closeModal()">Cancel</button>
+      </div>
+      <div class="status" id="rr-status"></div>`);
+    $('#rr-go').onclick = async () => {
+      setStatus('#rr-status', 'Dispatching…');
+      try {
+        const id = await News.launchScrape({
+          ...pm,
+          projectName: `${meta.name} (re-run ${new Date().toLocaleDateString()})`,
+          stance: meta.stance || 'oppose',
+        });
+        closeModal();
+        location.hash = '#/news/' + id;
+      } catch (e) { setStatus('#rr-status', e.message, 'err'); }
+    };
   },
 
   /* ── Open reports (route by project type) ───────────────────────────── */
@@ -883,7 +908,7 @@ const App = {
     const typeCls = { 'federal-votes': 'votes', 'state-votes': 'votes', 'oppo-book': 'oppo', 'documents': 'docs', 'news-scrape': 'news', 'web-scrape': 'web' };
     const typeName = { 'federal-votes': 'Federal Votes', 'state-votes': 'State Votes', 'oppo-book': 'Oppo Book', 'documents': 'Documents', 'news-scrape': 'News Scrape', 'web-scrape': 'Web Scrape' };
     $('#pr-list').innerHTML = projects.length ? `<div class="proj-grid">${projects.map(p => `
-      <div class="card proj-card" onclick="location.hash='#/report/${p.id}'">
+      <div class="card proj-card" data-id="${esc(p.id)}">
         <div class="top">
           <span class="type-tag ${typeCls[p.type] || 'docs'}">${esc(typeName[p.type] || p.type)}</span>
           <span class="status-dot ${['complete','running','failed','draft'].includes(p.status) ? p.status : 'complete'}" title="${esc(p.status || '')}"></span>
@@ -894,11 +919,23 @@ const App = {
         <div class="desc">${esc(p.summary || p.subject || '')}</div>
         <div class="foot">
           <span>${fmtDate(p.updated)}</span><span style="flex:1"></span>
-          ${p.origin !== 'repo' ? `<a href="javascript:void(0)" onclick="event.stopPropagation();Store.exportProject('${p.id}')" title="Export">⬇</a>
-          <a href="javascript:void(0)" onclick="event.stopPropagation();App.deleteFlow('${p.id}')" title="Delete" style="color:var(--sev-major)">✕</a>` : ''}
+          ${p.origin !== 'repo' ? `<a href="javascript:void(0)" data-act="export" title="Export">⬇</a>
+          <a href="javascript:void(0)" data-act="delete" title="Delete" style="color:var(--sev-major)">✕</a>` : ''}
         </div>
       </div>`).join('')}</div>`
       : `<div class="empty card"><div class="glyph">◌</div><p>No projects yet.</p><p style="margin-top:14px"><a class="btn" href="#/">Start your first project</a></p></div>`;
+
+    // Delegated: ids from imported project files must never land inside an
+    // inline handler's JS-string context, where esc() offers no protection.
+    $('#pr-list').addEventListener('click', e => {
+      const card = e.target.closest('.proj-card[data-id]');
+      if (!card) return;
+      const id = card.dataset.id;
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'export') { e.stopPropagation(); Store.exportProject(id); }
+      else if (act === 'delete') { e.stopPropagation(); this.deleteFlow(id); }
+      else location.hash = '#/report/' + id;
+    });
   },
 
   deleteFlow(id) {
@@ -906,9 +943,10 @@ const App = {
     showModal('Delete Project', `
       <p>Delete “<b>${esc(meta?.name || id)}</b>” from this browser? Its report data will be removed (export it first if you want to keep it).</p>
       <div style="margin-top:16px;display:flex;gap:10px">
-        <button class="btn danger" onclick="Store.deleteProject('${id}');closeModal();App.projects()">Delete</button>
+        <button class="btn danger" id="del-confirm">Delete</button>
         <button class="btn ghost" onclick="closeModal()">Cancel</button>
       </div>`);
+    $('#del-confirm').onclick = () => { Store.deleteProject(id); closeModal(); this.projects(); };
   },
 
   importFlow() {
@@ -931,4 +969,11 @@ const App = {
 };
 
 window.addEventListener('hashchange', () => App.route());
-window.addEventListener('DOMContentLoaded', () => App.route());
+// Scripts are injected dynamically (single APP_VERSION in index.html), so they
+// can finish AFTER DOMContentLoaded has already fired — in which case the
+// listener would never run and the app would render nothing. Check readyState.
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', () => App.route());
+} else {
+  App.route();
+}

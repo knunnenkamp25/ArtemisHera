@@ -56,11 +56,12 @@ const Votes = {
             smartFetch(`${base}/votes/${prefix}${n.congress}_votes.csv`),
             smartFetch(`${base}/rollcalls/${prefix}${n.congress}_rollcalls.csv`),
           ]);
-          const votes = parseCSV(await vResp.text());
+          // Filter to this member during the parse: H119_votes.csv is ~1M rows
+          // and materializing all of them just to keep ~1,000 cost hundreds of MB.
+          const votes = parseCSVFiltered(await vResp.text(), r => icpsrSet.has(r.icpsr));
           const rolls = parseCSV(await rResp.text());
           const rcMap = new Map(rolls.map(r => [r.rollnumber, r]));
           for (const v of votes) {
-            if (!icpsrSet.has(v.icpsr)) continue;
             const rc = rcMap.get(v.rollnumber) || {};
             const desc = rc.vote_desc || rc.dtl_desc || rc.vote_question || '';
             voteRecords.push({
@@ -88,8 +89,10 @@ const Votes = {
       throw err;
     }
     voteRecords.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    voteRecords.partial = failures > 0;
-    return voteRecords;
+    // Returned alongside the array rather than as a property on it: array
+    // properties are dropped by JSON.stringify, so nothing downstream could
+    // tell a partial report from a complete one once it was saved.
+    return Object.assign(voteRecords, { partial: failures > 0 });
   },
 
   // Cloud fallback: GitHub Actions fetches the vote files server-side
@@ -120,16 +123,7 @@ const Votes = {
     return projectId;
   },
 
-  async fetchCloudVotes(projectId) {
-    for (const p of [`data/federal/${projectId}.json?t=${Date.now()}`,
-                     `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/data/federal/${projectId}.json?t=${Date.now()}`]) {
-      try {
-        const r = await fetchTimed(p, {}, 20000);
-        if (r.ok) return await r.json();
-      } catch (e) { /* next */ }
-    }
-    return null;
-  },
+  fetchCloudVotes(projectId) { return fetchRepoJSON(`data/federal/${projectId}.json`); },
 
   // ── State pipeline ─────────────────────────────────────────────────────
   // Historical sessions live in this repo (data/state/…) in packed form:
@@ -224,20 +218,20 @@ const Votes = {
       for (let vi = 0; vi < voteRecords.length; vi++) {
         const v = voteRecords[vi];
         const hay = hays[vi];
-        let strongHit = null, weakStems = null, hitCount = 0;
+        // Collect hits, short-circuiting on the first strong one; then let the
+        // shared evidenceVerdict decide. Same rule as the text path. #32
         const hits = [];
+        let sawStrong = false;
         for (let pi = 0; pi < patterns.length; pi++) {
           if (!patternHit(hay, patterns[pi])) continue;
-          hitCount++;
-          if (hits.length < 3) hits.push(patterns[pi]);
-          if (strengths[pi] === 'strong') { strongHit = patterns[pi]; break; }
-          (weakStems || (weakStems = new Set())).add(patterns[pi].trim().slice(0, 4));
+          hits.push(patterns[pi]);
+          if (strengths[pi] === 'strong') { sawStrong = true; break; }
         }
-        if (!hitCount) continue;
-        // Weak hits only count as independent evidence when they're different
-        // words — "child" + "children" is one signal, not two.
-        if (!strongHit && (!weakStems || weakStems.size < 2)) continue;
-        if (strongHit) strongMatches++;
+        if (!hits.length) continue;
+        const verdict = evidenceVerdict(model, hits);
+        if (!verdict.matched) continue;
+        if (verdict.strong) strongMatches++;
+        void sawStrong;
         hits.slice(0, 3).forEach(h => matchedKeywords.add(h));
         if (v.member_vote === 'Yes') yes++;
         else if (v.member_vote === 'No') no++;

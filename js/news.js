@@ -30,24 +30,14 @@ const News = {
       summary: mode === 'news'
         ? `${outletCount} outlets · ${geography}`
         : `${urls.length} page${urls.length > 1 ? 's' : ''} queued`,
+      // Persist the parameters so "Re-run Scrape" can actually re-run this
+      // scrape instead of dumping the user on an empty form. #37
+      params: { mode, states, dmas, types, days, maxArticles, urls, geography },
     });
     return projectId;
   },
 
-  async fetchResults(projectId) {
-    // Try the deployed Pages copy first, then raw.github (fresher after commit)
-    const paths = [
-      `data/news/${projectId}.json?t=${Date.now()}`,
-      `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/data/news/${projectId}.json?t=${Date.now()}`,
-    ];
-    for (const p of paths) {
-      try {
-        const resp = await fetchTimed(p, {}, 20000);
-        if (resp.ok) return await resp.json();
-      } catch (e) { /* next */ }
-    }
-    return null;
-  },
+  fetchResults(projectId) { return fetchRepoJSON(`data/news/${projectId}.json`); },
 
   async refreshRunStatus() {
     // Reconcile locally-tracked "running" scrape projects against Actions runs

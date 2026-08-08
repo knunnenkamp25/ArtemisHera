@@ -135,6 +135,26 @@ const ANCHOR_WORDS = new Set([
   'absentee','disability','ssdi','snap','tanf','foia',
 ]);
 
+// THE evidence rule, in one place. Both the vote path (votes.js) and the text
+// path (util.js matchTextToUniverses) call this instead of each implementing
+// it — they had drifted into two similar-but-different scorings. #32
+//
+// A match needs one strong signal, or two independent weak ones. Weak hits are
+// deduped by stem so "child" + "children" counts once.
+function evidenceVerdict(universe, hitPatterns) {
+  let strong = 0;
+  const weakStems = new Set();
+  for (const p of hitPatterns) {
+    if (effectiveStrength(universe, p) === 'strong') strong++;
+    else weakStems.add(p.trim().slice(0, 4));
+  }
+  return {
+    matched: strong > 0 || weakStems.size >= 2,
+    strong: strong > 0,
+    score: strong * 2 + weakStems.size,
+  };
+}
+
 function patternStrength(p) {
   const t = (p || '').trim();
   return t.includes(' ') || ANCHOR_WORDS.has(t) ? 'strong' : 'weak';

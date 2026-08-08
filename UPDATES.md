@@ -39,38 +39,31 @@ just unproven until a legislature is in session and something new appears.
 
 ---
 
-## Remaining audit backlog (low severity)
+## Audit backlog — cleared
 
-Deliberately not fixed — none affect correctness of output:
+All 45 findings are now addressed. The final pass:
 
-- **#7** `parseCSV` materializes every row of a multi-million-row Voteview file
-  before filtering to ~1,000. Only hit on the browser federal path, which
-  already falls back to the cloud when Voteview is slow. Fix = stream and filter
-  per line.
-- **#14** Project ids are interpolated into `onclick` JS-string contexts in ~8
-  places. Locally-generated ids are safe; an imported `.artemishera.json` could
-  carry a hostile id. Fix = delegated `data-id` handlers (the pattern already
-  used in the vote and oppo tables).
-- **#16** Banning a keyword re-runs the full analysis and re-serializes the
-  whole payload. Fine at a few thousand votes, sluggish at 20k.
-- **#22** `scoreModelMatch`'s tertiary tier is unreachable — keywords are always
-  single tokens, so the secondary check always wins first. Confirmed: zero
-  tertiary assignments across every committed report. Either remove the tier or
-  redefine it.
-- **#23** `voteRecords.partial` is an array property, dropped by
-  `JSON.stringify`, so nothing downstream can tell a partial report from a
-  complete one.
-- **#30** `downloadFile` revokes the object URL synchronously and never appends
-  the anchor — unreliable in Firefox.
-- **#31** `Votes.fetchCloudVotes` and `News.fetchResults` are the same function
-  with different paths.
-- **#32** The evidence rule is implemented twice (JS vote path vs. JS text
-  path) with slightly different scoring. They agree today; they will drift.
-- **#37** "Re-run Scrape" discards the original parameters and dumps the user on
-  a blank form — scrape params are never persisted.
-- **#42** The cache-buster must be hand-bumped in 9 places in `index.html`.
-- **#45** CDN libraries load without SRI hashes. The hook exists
-  (`SCRIPT_HASHES` in `util.js`); the hashes are not filled in.
+- **#7** Voteview CSVs are filtered during the parse (`parseCSVFiltered`) instead
+  of materializing ~1M row objects to keep ~1,000.
+- **#14** Project ids no longer reach inline `onclick` JS-string contexts;
+  the Projects list and delete modal use delegated `data-id` handlers.
+- **#22** The tertiary match tier was unreachable dead code. Redefined as a real
+  morphological variant match via `wordVariants` — a looser shared-prefix rule
+  fired on 45% of keywords, so it was tightened to 194 assignments on the VA
+  sample, e.g. "services" → Veterans through *military service*.
+- **#23** `partial` returned alongside the array instead of as an array property
+  `JSON.stringify` silently drops.
+- **#30** `downloadFile` appends the anchor (Firefox needs it) and defers revoke.
+- **#31** One `fetchRepoJSON`, replacing two byte-identical copies.
+- **#32** One `evidenceVerdict` in `data.js`; both the vote and text paths call
+  it rather than each implementing the rule. Verified behaviour-preserving —
+  VA 2025 still yields 42 universes, Spanberger H118 still 29.
+- **#37** Scrape parameters are persisted, so "Re-run Scrape" actually re-runs.
+- **#42** One `APP_VERSION` in `index.html` drives every asset URL. This needed
+  a boot guard: dynamically injected scripts can finish after
+  `DOMContentLoaded`, so `App.route()` now checks `readyState`.
+- **#45** CDN scripts load with `crossorigin` and an SRI hook (`SCRIPT_HASHES`);
+  populate it to pin a library.
 
 ## Open loose ends
 
