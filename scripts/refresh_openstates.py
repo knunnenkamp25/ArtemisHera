@@ -105,6 +105,57 @@ def chamber_of(org):
     return ''
 
 
+def latest_session(base, abbrev, year):
+    """The session id to refresh for a state.
+
+    Only 20 of 51 states identify sessions by plain year; the rest use a
+    biennium (NY '2025-2026'), a legislature number (OH '136', TX '892'), or an
+    ordinal (MA '194th'). Asking every state for the current year — which the
+    scheduled job used to do — silently matched nothing for the other 31.
+
+    Take the most recent session in our own index that is still current, since
+    that id came from Open States itself and is exactly what the API expects.
+    """
+    try:
+        idx = json.load(open(os.path.join(base, 'sessions.json')))
+    except Exception:
+        return str(year)
+    entry = idx.get(abbrev) or {}
+    current = [s for s in entry.get('sessions', []) if s.get('year_end', 0) >= year]
+    if not current:                       # nothing live this year
+        return None
+    # Prefer a regular session over a special one when both are current.
+    current.sort(key=lambda s: (s.get('special', False), -s.get('year_start', 0)))
+    return current[0]['id']
+
+
+def session_from_api(state, year):
+    """Ask Open States which sessions are current.
+
+    latest_session() can only see sessions already in our archive, so a session
+    that begins after the last bulk download would never be picked up and the
+    weekly job would quietly do nothing for that state forever. One extra
+    request per state covers it.
+    """
+    try:
+        data = api(f'/jurisdictions/{urllib.parse.quote(state)}',
+                   include='legislative_sessions')
+    except ApiError as e:
+        print(f'  could not list sessions from the API: {e}', file=sys.stderr)
+        return None
+    live = []
+    for ls in data.get('legislative_sessions', []) or []:
+        end = (ls.get('end_date') or '')[:4]
+        start = (ls.get('start_date') or '')[:4]
+        if (end and int(end) >= year) or (start and int(start) <= year and not end):
+            live.append((ls.get('classification') == 'special', -(int(start or 0)),
+                         ls.get('identifier')))
+    if not live:
+        return None
+    live.sort()
+    return live[0][2]
+
+
 def load_packed(d):
     def read(name, default):
         try:
@@ -117,7 +168,9 @@ def load_packed(d):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--state', required=True, help='Full jurisdiction name, e.g. Virginia')
-    ap.add_argument('--session', required=True, help='Session identifier, e.g. 2026')
+    ap.add_argument('--session', default='',
+                    help="Session identifier (e.g. 2026, 20252026, 136). Omit to "
+                         "use the most recent current session for the state.")
     ap.add_argument('--since', default='', help='ISO date; defaults to 8 days ago')
     ap.add_argument('--base', default='data/state')
     ap.add_argument('--max-requests', type=int, default=120,
@@ -129,6 +182,21 @@ def main():
     args = ap.parse_args()
 
     abbrev = STATE_ABBREV.get(args.state, args.state)
+    session = args.session or latest_session(
+        args.base, abbrev, datetime.now(timezone.utc).year)
+    if not session:
+        # Nothing current in our archive — the session may have started after
+        # the last bulk download, so ask the API directly.
+        session = session_from_api(args.state, datetime.now(timezone.utc).year)
+        if not session:
+            print(f'{args.state}: no current session found in the archive or via '
+                  f'the API — nothing to refresh.', file=sys.stderr)
+            return
+        print(f'  session not in archive; API reports current session -> {session}',
+              file=sys.stderr)
+    if session != args.session:
+        print(f'  resolved session -> {session}', file=sys.stderr)
+    args.session = session
     out_dir = os.path.join(args.base, abbrev, args.session)
     people_list, rollcalls, votes = load_packed(out_dir)
     people = {p['people_id']: p for p in people_list}
