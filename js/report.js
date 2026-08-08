@@ -48,7 +48,7 @@ const Report = {
         <select id="rp-cat"><option value="">All Categories</option>${categories.map(c => `<option>${esc(c)}</option>`).join('')}</select>
         <select id="rp-sev"><option value="">All Severities</option>${SEVERITY_ORDER.map(s => `<option>${s}</option>`).join('')}</select>
         <select id="rp-uni"><option value="">All Universes</option>${universes.map(u => `<option>${esc(u)}</option>`).join('')}</select>
-        <span class="count" id="rp-count"></span>
+        <span class="count" id="rp-count"></span><span class="count" id="rp-rematch-note" style="margin-left:0"></span>
         <button class="btn ghost sm" onclick="Report.rematchOppo()" title="Recompute universe matches for auto-extracted attacks using the current matching rules">⟳ Re-match Universes</button>
         <button class="btn ghost sm" onclick="Report.exportOppoCSV()">Export CSV</button>
         <button class="btn ghost sm" onclick="Store.exportProject('${meta.id}')">Export Project</button>
@@ -76,10 +76,15 @@ const Report = {
 
     // wire controls
     ['rp-search', 'rp-cat', 'rp-sev', 'rp-uni'].forEach(id => {
-      $('#' + id).addEventListener(id === 'rp-search' ? 'input' : 'change', () => {
-        if (id === 'rp-uni') this.state.activeUniverse = $('#rp-uni').value;
+      const handler = () => {
+        if (id === 'rp-uni') {
+          this.state.activeUniverse = $('#rp-uni').value;
+          this.renderUniverseGrid();     // keep the chip highlight in step
+        }
         this.applyOppoFilters();
-      });
+      };
+      $('#' + id).addEventListener(id === 'rp-search' ? 'input' : 'change',
+        id === 'rp-search' ? debounce(handler, 200) : handler);
     });
     // Delegated expand handler (keeps attack data out of inline handlers)
     $('#rp-body').addEventListener('click', e => {
@@ -203,7 +208,10 @@ const Report = {
     }
     Store.saveProject(meta, payload);
     this.renderOppo(meta, payload);
-    setStatus('#rp-count', changed ? `${changed} attacks re-matched` : 'No changes — matches already current');
+    // Not setStatus: that strips the .count class and overwrites the
+    // "X of Y attacks" text that renderOppoTable just set.
+    const note = $('#rp-rematch-note');
+    if (note) note.textContent = changed ? `${changed} re-matched` : 'already current';
   },
 
   exportOppoCSV() {
@@ -282,7 +290,7 @@ const Report = {
       </table></div>
       <div class="filterbar" id="vt-pager"></div>`;
 
-    $('#vt-search').addEventListener('input', () => this.applyVoteFilters());
+    $('#vt-search').addEventListener('input', debounce(() => this.applyVoteFilters(), 200));
     $('#vt-type').addEventListener('change', () => this.applyVoteFilters());
     // Delegated handler for the ban-keyword × buttons in the topic table
     $('#tp-body').addEventListener('click', e => {

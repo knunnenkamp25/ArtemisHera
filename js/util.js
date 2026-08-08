@@ -11,17 +11,28 @@ let workingProxyIdx = -1;
 async function fetchWithTimeout(url, ms = FETCH_TIMEOUT_MS) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { signal: ctrl.signal }); }
-  finally { clearTimeout(timer); }
+  // Deliberately NOT clearing the timer here: fetch() resolves on headers, and
+  // a proxy that sends headers then stalls the body would otherwise hang with
+  // no timer running. The caller clears it once the body is consumed.
+  const resp = await fetch(url, { signal: ctrl.signal });
+  resp._abortTimer = timer;
+  return resp;
 }
 
 async function smartFetch(url, timeoutMs = FETCH_TIMEOUT_MS) {
+  // Reads the body under the same abort timer, then clears it. Clearing on
+  // headers (the old behaviour) meant a proxy that stalled mid-body hung
+  // forever; never clearing would leave a live timer per request.
   async function validateResp(resp) {
-    if (!resp || !resp.ok) return null;
-    const peek = await resp.clone().text();
-    const t = peek.trimStart();
-    if (t.startsWith('<!DOCTYPE') || t.startsWith('<html')) return null; // login/redirect page
-    return new Response(peek, { status: 200, headers: resp.headers });
+    if (!resp || !resp.ok) { if (resp) clearTimeout(resp._abortTimer); return null; }
+    try {
+      const peek = await resp.clone().text();
+      const t = peek.trimStart();
+      if (t.startsWith('<!DOCTYPE') || t.startsWith('<html')) return null; // login/redirect page
+      return new Response(peek, { status: 200, headers: resp.headers });
+    } finally {
+      clearTimeout(resp._abortTimer);
+    }
   }
   if (workingProxyIdx >= 0) {
     try {
@@ -41,6 +52,22 @@ async function smartFetch(url, timeoutMs = FETCH_TIMEOUT_MS) {
     } catch (e) { continue; }
   }
   throw new Error('All fetch methods failed for: ' + url);
+}
+
+// Every fetch in the app should be time-boxed. Without this a hung request
+// leaves a spinner up indefinitely — the Projects page blocked on api.github.com
+// was the worst case.
+async function fetchTimed(url, opts = {}, ms = 20000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error(`Timed out after ${ms / 1000}s: ${url}`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── CSV parsing with quoted-field support ──────────────────────────────────
@@ -372,12 +399,18 @@ function toCSV(rows, headers) {
 }
 
 // Lazy-load an external script once (pdf.js, mammoth)
+// Subresource Integrity for the CDN libraries. These run against uploaded
+// opposition-research documents, so a compromised CDN would be serious. Fill in
+// a hash to pin a library; without one the script still loads (unpinned).
+const SCRIPT_HASHES = {};
 const _loadedScripts = {};
 function loadScript(src) {
   if (_loadedScripts[src]) return _loadedScripts[src];
   _loadedScripts[src] = new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = src;
+    s.crossOrigin = 'anonymous';   // required for SRI and clean error reporting
+    if (SCRIPT_HASHES[src]) s.integrity = SCRIPT_HASHES[src];
     s.onload = resolve;
     s.onerror = () => {
       // Don't cache the rejection — one CDN blip would otherwise poison this
@@ -497,4 +530,13 @@ async function fetchJSONProgress(url, onProgress) {
   return JSON.parse(new TextDecoder().decode(buf));
 }
 
+// Trailing-edge debounce for filter inputs: each keystroke otherwise re-walked
+// every row (20k+ on a big vote report) and rebuilt the table.
+function debounce(fn, ms = 200) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+// #26: bump `updated` only when the payload actually changes, so merely opening
+// a report no longer rewrites its timestamp and jumps it to the top of the list.
 function fmtMB(bytes) { return (bytes / 1e6).toFixed(1) + ' MB'; }

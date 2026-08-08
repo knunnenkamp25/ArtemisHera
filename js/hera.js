@@ -22,7 +22,8 @@ const Hera = {
 
     if (meta.type === 'oppo-book' && payload.attacks) {
       const rank = { Major: 0, Moderate: 1, Minor: 2, Niche: 3 };
-      [...payload.attacks].sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 12).forEach(a => hits.push({
+      const sev = a => rank[a.severity] ?? 9;   // unknown severity sorts last, never NaN
+      [...payload.attacks].sort((a, b) => sev(a) - sev(b)).slice(0, 12).forEach(a => hits.push({
         kind: stance === 'support' ? 'vulnerability' : 'attack',
         line: a.attack, detail: a.key_detail, severity: a.severity,
         universes: [a.best_universe, a.secondary_universe, a.tertiary_universe].filter(Boolean),
@@ -86,7 +87,10 @@ const Hera = {
     if (!hits.length) throw new Error('This project has no message-ready findings yet.');
 
     const phases = stance === 'support' ? HERA_PHASES_SUPPORT : HERA_PHASES_OPPOSE;
-    const phaseOf = w => { const t = w / weeks; return t < 0.34 ? 0 : t < 0.75 ? 1 : 2; };
+    // (w - 1) because weeks are 1-indexed: the old form gave the final week
+    // t === 1.0 and skewed every boundary late (a 4-week plan split 1/1/2,
+    // leaving the sustained-pressure phase a single week).
+    const phaseOf = w => { const t = (w - 1) / weeks; return t < 0.34 ? 0 : t < 0.75 ? 1 : 2; };
     const topHits = hits.slice(0, 6);
     const allU = [...new Set(hits.flatMap(h => h.universes))];
 
@@ -360,9 +364,14 @@ const Hera = {
   },
 
   async exportPNG(canvasId, w, h, name) {
-    await loadScript(HTML2CANVAS_URL);
     const el = document.getElementById(canvasId);
-    if (!el) return;
+    if (!el || !el.offsetWidth) return;      // offsetWidth 0 would make scale Infinity
+    try {
+      await loadScript(HTML2CANVAS_URL);
+    } catch (e) {
+      showModal('Export unavailable', '<p>Could not load the image library (html2canvas) from the CDN. Check your connection and try again.</p>');
+      return;
+    }
     const scale = w / el.offsetWidth;
     const canvas = await window.html2canvas(el, { scale, backgroundColor: null, logging: false });
     const a = document.createElement('a');
@@ -520,7 +529,7 @@ const Hera = {
     const c = this.state.campaign;
     const t = c.timeline[idx];
     if (!t) return;
-    showModal(`Week ${t.week} — ${esc(t.label)}`, `
+    showModal(`Week ${t.week} — ${t.label}`, `
       <p><b>Phase:</b> ${c.phases[t.phase].name}</p>
       <p style="margin-top:8px"><b>Featured ${c.stance === 'support' ? 'proof point' : 'hit'}:</b> ${esc(t.hit.line)}</p>
       <p style="margin-top:8px;color:var(--bark)">${esc(t.hit.detail || '')}</p>

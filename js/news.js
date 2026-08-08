@@ -42,7 +42,7 @@ const News = {
     ];
     for (const p of paths) {
       try {
-        const resp = await fetch(p);
+        const resp = await fetchTimed(p, {}, 20000);
         if (resp.ok) return await resp.json();
       } catch (e) { /* next */ }
     }

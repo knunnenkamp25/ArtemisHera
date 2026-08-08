@@ -21,7 +21,11 @@ const Store = {
   // library whenever the payload write blew the ~5MB localStorage quota — the
   // project appeared but could never be opened.
   saveProject(meta, payload) {
-    meta.updated = new Date().toISOString();
+    // Only stamp `updated` when a payload is actually written. Metadata-only
+    // saves (opening a cloud report, reconciling run status) used to rewrite it,
+    // so simply viewing a project showed today's date and jumped it to the top.
+    if (payload !== undefined) meta.updated = new Date().toISOString();
+    else meta.updated = meta.updated || new Date().toISOString();
     meta.created = meta.created || meta.updated;
     meta.origin = 'local';
 
@@ -61,7 +65,7 @@ const Store = {
   // Repo-side projects (news / web scrapes committed by the Actions workflow)
   async repoProjects() {
     try {
-      const resp = await fetch('data/projects.json?t=' + Date.now());
+      const resp = await fetchTimed('data/projects.json?t=' + Date.now());
       if (!resp.ok) return [];
       const arr = await resp.json();
       return (Array.isArray(arr) ? arr : []).map(p => ({ ...p, origin: 'repo' }));
@@ -114,7 +118,7 @@ const GH = {
   async api(path, opts = {}) {
     const token = this.getToken();
     if (!token) throw new Error('NO_TOKEN');
-    const resp = await fetch(`https://api.github.com${path}`, {
+    const resp = await fetchTimed(`https://api.github.com${path}`, {
       ...opts,
       headers: {
         'Accept': 'application/vnd.github+json',
@@ -145,12 +149,18 @@ const GH = {
     if (resp.status === 403) return { ok: false, reason: `Token is valid but lacks the "Actions: Read and write" permission on ${CONFIG.GH_REPO}.` };
     if (resp.status === 404) return { ok: false, reason: `Token cannot see ${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}. Check that the repository is selected under "Repository access".` };
     if (!resp.ok) return { ok: false, reason: 'GitHub returned ' + resp.status + '.' };
-    const data = await resp.json();
-    return {
-      ok: true,
-      workflows: (data.workflows || []).map(w => w.name),
-      expiry: this.getExpiry(),
-    };
+    // A non-JSON 2xx (proxy interstitial, outage page) used to reject here and
+    // strand the modal on "Verifying…" with the unverified token still saved.
+    try {
+      const data = await resp.json();
+      return {
+        ok: true,
+        workflows: (data.workflows || []).map(w => w.name),
+        expiry: this.getExpiry(),
+      };
+    } catch (e) {
+      return { ok: false, reason: 'GitHub returned an unreadable response — try again.' };
+    }
   },
 
   async dispatchScrape(inputs) {

@@ -251,18 +251,29 @@ const App = {
       $('#sv-session').innerHTML = (sessions[st].sessions || []).map(s => `<option value="${s.id}">${esc(s.name)} (${s.people_count} members)</option>`).join('');
       fillMembers();
     };
+    // Roster loads are async and fire on both state and session changes. Without
+    // a sequence guard, a slower earlier request could land last and overwrite
+    // the roster while the selects showed a different state — clicking Load
+    // Votes then pulled the wrong legislator's record under the right name.
+    let rosterSeq = 0;
+    let roster = [];
     const fillMembers = async () => {
+      const seq = ++rosterSeq;
       const st = $('#sv-state').value, se = $('#sv-session').value;
       setStatus('#sv-status', 'Loading legislators…');
       $('#sv-run').disabled = true;
       try {
         const people = await Votes.loadStateMembers(st, se);
-        $('#sv-member').innerHTML = people
-          .sort((a, b) => a.name.localeCompare(b.name))
+        if (seq !== rosterSeq) return;          // superseded by a newer selection
+        roster = [...people].sort((a, b) => a.name.localeCompare(b.name));
+        $('#sv-member').innerHTML = roster
           .map((p, i) => `<option value="${i}">${esc(p.name)} (${esc(p.party || '?')}) — ${esc(p.role || '')} ${esc(p.district || '')}</option>`).join('');
-        setStatus('#sv-status', `${people.length} legislators loaded.`, 'ok');
+        setStatus('#sv-status', `${roster.length} legislators loaded.`, 'ok');
         $('#sv-run').disabled = false;
-      } catch (e) { setStatus('#sv-status', 'Could not load legislators: ' + e.message, 'err'); }
+      } catch (e) {
+        if (seq !== rosterSeq) return;
+        setStatus('#sv-status', 'Could not load legislators: ' + e.message, 'err');
+      }
     };
     $('#sv-state').onchange = fillSessions;
     $('#sv-session').onchange = fillMembers;
@@ -270,7 +281,8 @@ const App = {
 
     $('#sv-run').onclick = async () => {
       const st = $('#sv-state').value, se = $('#sv-session').value;
-      const person = Votes.stateMembers.sort((a, b) => a.name.localeCompare(b.name))[+$('#sv-member').value];
+      const person = roster[+$('#sv-member').value];
+      if (!person) return setStatus('#sv-status', 'Pick a legislator first.', 'err');
       $('#sv-run').disabled = true;
       setStatus('#sv-status', '');
       Progress.start('#sv-progress', 'Starting…');
@@ -407,7 +419,7 @@ const App = {
 
     let sites = [];
     try {
-      sites = await (await fetch('data/news_sites.json')).json();
+      sites = await (await fetchTimed('data/news_sites.json', {}, 30000)).json();
     } catch (e) { return setStatus('#ns-status', 'Could not load the site inventory (data/news_sites.json).', 'err'); }
 
     const states = [...new Set(sites.map(s => s.state))].sort();
@@ -780,6 +792,7 @@ const App = {
 
   /* ── Open reports (route by project type) ───────────────────────────── */
   async openReport(id) {
+    if (!this._lastReportId || this._lastReportId !== id) { this._voteTries = 0; this._lastReportId = id; }
     const meta = Store.getMeta(id) || (await Store.repoProjects()).find(p => p.id === id);
     if (!meta) return this.notFound();
     if (meta.type === 'news-scrape' || meta.type === 'web-scrape') return this.openNews(id);
@@ -814,7 +827,17 @@ const App = {
         <p>This page refreshes automatically. Typical run: 2–5 minutes.</p>
         <p style="margin-top:12px"><a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener" class="btn ghost sm">View run status on GitHub</a></p>
       </div>`;
+    // Bounded: previously this polled every 25s forever, so a failed cloud run
+    // left the page spinning with no way to learn it had failed.
     clearTimeout(this._votePoll);
+    this._voteTries = (this._voteTries || 0) + 1;
+    if (this._voteTries > 24) {              // ~10 minutes
+      $('#view').querySelector('.empty').innerHTML =
+        `<div class="glyph">⚠</div><p>No result after 10 minutes — the cloud run may have failed.</p>
+         <p style="margin-top:12px"><a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener" class="btn ghost sm">Check the Actions log</a>
+         <button class="btn sm" style="margin-left:8px" onclick="App._voteTries=0;App.openReport('${meta.id}')">Keep waiting</button></p>`;
+      return;
+    }
     this._votePoll = setTimeout(() => { if (location.hash === '#/report/' + meta.id) this.openReport(meta.id); }, 25000);
   },
 

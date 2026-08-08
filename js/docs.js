@@ -50,7 +50,9 @@ const Docs = {
   splitSentences(text) {
     return text
       .replace(/\s+/g, ' ')
-      .split(/(?<=[.!?])\s+(?=[A-Z“"'(])/)
+      // Split after sentence punctuation without a lookbehind: those are a
+      // parse-time SyntaxError in Safari < 16.4, which would fail this whole file.
+      .replace(/([.!?])\s+(?=[A-Z“"'(])/g, '$1\u0000').split('\u0000')
       .map(s => s.trim())
       .filter(s => s.length > 40 && s.length < 800);
   },
@@ -100,7 +102,7 @@ const Docs = {
 
       const category = this.detectCategory(s);
       const severity = this.scoreSeverity(s, signals.length);
-      const universes = matchTextToUniverses(s, index, 3);
+      const matched = matchTextToUniverses(s, index, 3);
 
       attacks.push({
         number: ++num,
@@ -108,9 +110,9 @@ const Docs = {
         attack: s.length > 220 ? s.slice(0, 217) + '…' : s,
         key_detail: s,
         severity,
-        best_universe: universes[0] || '',
-        secondary_universe: universes[1] || '',
-        tertiary_universe: universes[2] || '',
+        best_universe: matched[0] || '',
+        secondary_universe: matched[1] || '',
+        tertiary_universe: matched[2] || '',
         notes: 'Auto-extracted (signal: ' + signals[0] + ')',
       });
     });
@@ -125,7 +127,8 @@ const Docs = {
   parseAttacksJSON(text) {
     const data = JSON.parse(text);
     const arr = Array.isArray(data) ? data : (data.attacks || []);
-    if (!arr.length || !arr[0].attack) throw new Error('JSON does not look like a Poseidon attacks file.');
+    if (!arr.length || !arr.every(a => a && typeof a === 'object' && typeof a.attack === 'string'))
+      throw new Error('JSON does not look like a Poseidon attacks file — every entry needs an "attack" string.');
     return arr.map((a, i) => ({
       number: a.number || i + 1,
       category: a.category || 'Other',

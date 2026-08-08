@@ -15,7 +15,7 @@ const Votes = {
   async loadMembers(onStatus) {
     if (this.allMembers.length) return this.allMembers;
     onStatus && onStatus('Loading member directory…');
-    const resp = await fetch('data/federal/members.json');
+    const resp = await fetchTimed('data/federal/members.json', {}, 30000);
     if (!resp.ok) throw new Error('Member directory is missing from the deployment (data/federal/members.json).');
     this.allMembers = await resp.json();
     return this.allMembers;
@@ -124,7 +124,7 @@ const Votes = {
     for (const p of [`data/federal/${projectId}.json?t=${Date.now()}`,
                      `https://raw.githubusercontent.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/main/data/federal/${projectId}.json?t=${Date.now()}`]) {
       try {
-        const r = await fetch(p);
+        const r = await fetchTimed(p, {}, 20000);
         if (r.ok) return await r.json();
       } catch (e) { /* next */ }
     }
@@ -143,7 +143,7 @@ const Votes = {
     let lastStatus = 0;
     for (const base of bases) {
       try {
-        const resp = await fetch(`${base}/${path}`);
+        const resp = await fetchTimed(`${base}/${path}`, {}, 30000);
         if (resp.ok) return resp.json();
         lastStatus = resp.status;
       } catch (e) { lastStatus = lastStatus || 'network error'; }
