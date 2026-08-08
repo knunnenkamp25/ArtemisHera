@@ -1,5 +1,15 @@
 [
   {
+    "id": "scr-msjokvi9-nzth4",
+    "name": "Richmond - Petersburg, VA News \u2014 8/7/2026",
+    "type": "news-scrape",
+    "status": "complete",
+    "subject": "Cloud scrape",
+    "summary": "48 articles collected",
+    "created": "2026-08-08T01:18:08.744599Z",
+    "updated": "2026-08-08T01:18:08.744599Z"
+  },
+  {
     "id": "fed-msip05i8-5zy7b",
     "name": "KIGGANS, Jennifer \u2014 Federal Votes",
     "type": "federal-votes",
