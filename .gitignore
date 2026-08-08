@@ -1,3 +1,10 @@
 .DS_Store
 __pycache__/
 *.pyc
+_refs/
+
+# local-only: marketing collateral (internal roadmap) and the screenshot
+# seeding harness — neither belongs on the public Pages deploy
+marketing/
+_shot.html
+.claude/

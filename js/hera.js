@@ -315,7 +315,7 @@ const Hera = {
         <div class="adx-bannerwrap">
           <div>
             <div class="adx-kicker" style="color:${p.accent}">${esc(a.kicker)}</div>
-            <div class="adx-line" style="font-size:20px">${esc(a.headline)}</div>
+            <div class="adx-line adx-bannerline">${esc(a.headline)}</div>
           </div>
           <span class="adx-cta" style="color:${p.bg};background:${p.accent}">${esc(a.cta)}</span>
         </div>`;
@@ -381,7 +381,9 @@ const Hera = {
   },
 
   /* ── UI ──────────────────────────────────────────────────────────────── */
-  async renderPicker(preselect) {
+  // `tab` deep-links a generated campaign straight to one panel —
+  // #/hera?project=…&tab=ads opens the ad concepts instead of the timeline.
+  async renderPicker(preselect, tab) {
     const projects = await Store.allProjects();
     const eligible = projects.filter(p => p.status !== 'failed');
     $('#view').innerHTML = `
@@ -463,7 +465,14 @@ const Hera = {
         setStatus('#hera-status', e.message, 'err');
       }
     };
-    if (preselect && btn) btn.onclick();
+    if (preselect && btn) {
+      btn.onclick();
+      const panels = ['timeline', 'email', 'social', 'sms', 'press', 'ads'];
+      if (tab && panels.includes(tab) && this.state && this.state.campaign) {
+        this.state.tab = tab;
+        this.renderCampaign();
+      }
+    }
   },
 
   renderCampaign() {

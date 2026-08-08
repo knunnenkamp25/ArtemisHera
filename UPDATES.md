@@ -65,6 +65,20 @@ All 45 findings are now addressed. The final pass:
 - **#45** CDN scripts load with `crossorigin` and an SRI hook (`SCRIPT_HASHES`);
   populate it to pin a library.
 
+## Marketing collateral (local only, gitignored)
+
+Lives in `marketing/` — not committed, since the repo is public and the deck
+names internal next steps:
+
+- `Artemis_OnePager.pdf` / `Hera_OnePager.pdf` — Franking-style one-pagers.
+  Rebuild: edit the HTML, then print via headless Chrome (Letter, no margins).
+- `ArtemisHera_Deck.pptx` — 12 slides, Sweet Briar design system, real app
+  screenshots. Rebuild from the repo root: `python3 marketing/build_deck.py`
+  (screenshots live in `_refs/shots/`, captured off `_shot.html`, which seeds
+  demo projects from the real VA 2025 pipeline).
+- Deck ends on next steps: Poseidon DB integration (Jessie), permanent home at
+  www.artemishera.pantheoninsight.com, customer-facing portal.
+
 ## Open loose ends
 
 - [ ] **Rotate the Open States API key** — it appeared in a screenshot on 8/7

@@ -22,7 +22,7 @@ const App = {
     if (seg[0] === 'report') return this.openReport(seg[1]);
     if (seg[0] === 'news') return this.openNews(seg[1]);
     if (seg[0] === 'projects') return this.projects();
-    if (seg[0] === 'hera') return Hera.renderPicker(params.get('project') || '');
+    if (seg[0] === 'hera') return Hera.renderPicker(params.get('project') || '', params.get('tab') || '');
     if (seg[0] === 'settings') return this.settings();
     this.home();
   },

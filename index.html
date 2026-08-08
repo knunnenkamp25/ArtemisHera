@@ -41,7 +41,7 @@
      Bump APP_VERSION on deploy; every asset picks it up. GitHub Pages serves
      these with a long max-age, so without it returning users run stale JS. -->
 <script>
-  const APP_VERSION = '20';
+  const APP_VERSION = '21';
   document.getElementById('ah-css').href = `css/main.css?v=${APP_VERSION}`;
   // async=false keeps execution order for dynamically inserted scripts, which
   // matters because these are plain globals with load-order dependencies.
