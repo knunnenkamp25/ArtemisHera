@@ -47,6 +47,12 @@ STATE_ABBREV = {
 _requests = 0
 
 
+class ApiError(Exception):
+    """Raised instead of exiting, so a mid-run failure can still keep whatever
+    was collected before it. A weekly refresh that gets most of the way through
+    should commit that, not throw it away."""
+
+
 def api(path, **params):
     """One GET against the v3 API, throttled to stay under 1 req/sec."""
     global _requests
@@ -55,20 +61,31 @@ def api(path, **params):
         raise SystemExit('OPENSTATES_KEY environment variable is not set')
     url = f'{API}{path}?' + urllib.parse.urlencode(params, doseq=True)
     req = urllib.request.Request(url, headers={'X-API-KEY': key})
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             time.sleep(1.1)              # documented limit: 1 request/second
             with urllib.request.urlopen(req, timeout=120) as r:
                 _requests += 1
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code == 429:            # rate limited — back off and retry
-                wait = 20 * (attempt + 1)
-                print(f'  429 rate limited, waiting {wait}s', file=sys.stderr)
+            body = ''
+            try:
+                body = e.read().decode('utf-8', 'replace')[:300]
+            except Exception:
+                pass
+            if e.code in (429, 502, 503, 504):
+                # Honour Retry-After when the server sends one.
+                hdr = e.headers.get('Retry-After') if e.headers else None
+                wait = int(hdr) if (hdr or '').isdigit() else 15 * (attempt + 1)
+                print(f'  {e.code} from API, waiting {wait}s (attempt {attempt + 1}/4)',
+                      file=sys.stderr)
                 time.sleep(wait)
                 continue
-            raise SystemExit(f'Open States {path} failed: {e.code} {e.read()[:200]}')
-    raise SystemExit('Open States: still rate limited after retries')
+            raise ApiError(f'{path} failed: HTTP {e.code} {body}')
+        except Exception as e:
+            print(f'  network error ({e}); retrying', file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
+    raise ApiError(f'{path}: still failing after retries')
 
 
 CHAMBER_ROLE = {'upper': 'Senate', 'lower': 'House'}
@@ -125,8 +142,13 @@ def main():
         if _requests >= args.max_requests:
             print(f'  stopping at request ceiling ({args.max_requests})', file=sys.stderr)
             break
-        data = api('/bills', jurisdiction=args.state, session=args.session,
-                   updated_since=since, include='votes', page=page, per_page=20)
+        try:
+            data = api('/bills', jurisdiction=args.state, session=args.session,
+                       updated_since=since, include='votes', page=page, per_page=20)
+        except ApiError as e:
+            print(f'  stopped at page {page}: {e}', file=sys.stderr)
+            print('  keeping everything collected up to this point.', file=sys.stderr)
+            break
         results = data.get('results', [])
         bills_seen += len(results)
         if page == 1:
@@ -138,6 +160,8 @@ def main():
         for bill in results:
             for ve in bill.get('votes', []) or []:
                 vote_events_seen += 1
+                if not isinstance(ve, dict):
+                    continue
                 key = (bill.get('identifier', '').replace(' ', ''),
                        (ve.get('start_date') or '')[:10], ve.get('motion_text', ''))
                 if key in seen:
