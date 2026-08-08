@@ -164,11 +164,26 @@ const Votes = {
 
   VOTE_CODES: { 1: 'Yes', 2: 'No', 3: 'Present', 4: 'Not Voting' },
 
-  async loadStateVotes(state, session, person) {
-    const [rollcalls, votes] = await Promise.all([
-      this._stateFetch(`${state}/${session}/rollcalls.json`),
-      this._stateFetch(`${state}/${session}/votes.json`),
-    ]);
+  // onProgress(fraction, label) — sessions run to 18 MB, so report real bytes.
+  async loadStateVotes(state, session, person, onProgress) {
+    const base = CONFIG.STATE_DATA_LOCAL || CONFIG.STATE_DATA_BASE;
+    let rollcalls, votes;
+    if (onProgress) {
+      // Sequential rather than parallel so the reported percentage is honest.
+      // f is null when the body is compressed and the true total is unknown;
+      // report bytes received rather than an overshooting percentage.
+      const label = (what, got, tot) =>
+        tot ? `Downloading ${what} — ${fmtMB(got)} of ${fmtMB(tot)}` : `Downloading ${what} — ${fmtMB(got)}`;
+      rollcalls = await fetchJSONProgress(`${base}/${state}/${session}/rollcalls.json`,
+        (f, got, tot) => onProgress(f == null ? null : f * 0.45, label('bill records', got, tot)));
+      votes = await fetchJSONProgress(`${base}/${state}/${session}/votes.json`,
+        (f, got, tot) => onProgress(f == null ? null : 0.45 + f * 0.45, label('vote records', got, tot)));
+    } else {
+      [rollcalls, votes] = await Promise.all([
+        this._stateFetch(`${state}/${session}/rollcalls.json`),
+        this._stateFetch(`${state}/${session}/votes.json`),
+      ]);
+    }
     const mine = votes[String(person.people_id)] || [];
     return mine.map(([idx, code]) => {
       const rc = rollcalls[idx] || [];

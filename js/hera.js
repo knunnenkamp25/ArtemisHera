@@ -421,6 +421,7 @@ const Hera = {
 
     const btn = $('#hera-gen');
     if (btn) btn.onclick = () => {
+      Progress.start('#hera-status', 'Generating campaign…'); Progress.set(null);
       const id = $('#hera-proj').value;
       const meta = Store.getMeta(id) || eligible.find(p => p.id === id);
       const payload = Store.getPayload(id);
@@ -432,9 +433,15 @@ const Hera = {
           sponsor: $('#hera-sponsor').value.trim() || 'Paid for by [Committee Name]',
         });
         this.state = { campaign, meta, tab: 'timeline' };
-        if (payload) { payload.hera = campaign; Store.saveProject(meta, payload); }
+        if (payload) {
+          payload.hera = campaign;
+          try { Store.saveProject(meta, payload); }
+          catch (e) { console.warn('Campaign not cached:', e.message); }
+        }
+        Progress.done();
         this.renderCampaign();
       } catch (e) {
+        Progress.done();
         if (meta && meta.origin === 'repo' && !payload) {
           setStatus('#hera-status', 'Loading project results…');
           News.fetchResults(id).then(data => {

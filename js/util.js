@@ -410,3 +410,91 @@ function setStatus(el, msg, cls = '') {
   el.className = 'status ' + cls;
   el.textContent = msg;
 }
+
+// ── Progress ───────────────────────────────────────────────────────────────
+// Shared feedback for anything slow enough to look broken. A Tennessee session
+// is an 18 MB download followed by a couple of seconds of synchronous
+// analysis; without this the page just sat there.
+const Progress = {
+  _host: null,
+
+  start(containerSel, label = 'Working…') {
+    const host = typeof containerSel === 'string' ? $(containerSel) : containerSel;
+    if (!host) return;
+    host.innerHTML = `
+      <div class="ah-progress">
+        <div class="ah-prog-label"><span id="ah-prog-text">${esc(label)}</span><span id="ah-prog-pct"></span></div>
+        <div class="progress-track"><div class="progress-fill" id="ah-prog-fill"></div></div>
+      </div>`;
+    this._host = host;
+  },
+
+  // frac === null renders an indeterminate sweep instead of a percentage.
+  set(frac, label) {
+    const fill = $('#ah-prog-fill'), pct = $('#ah-prog-pct'), txt = $('#ah-prog-text');
+    if (!fill) return;
+    if (label && txt) txt.textContent = label;
+    if (frac == null) {
+      fill.classList.add('indeterminate');
+      fill.style.width = '100%';
+      if (pct) pct.textContent = '';
+    } else {
+      fill.classList.remove('indeterminate');
+      const p = Math.max(0, Math.min(100, Math.round(frac * 100)));
+      fill.style.width = p + '%';
+      if (pct) pct.textContent = p + '%';
+    }
+  },
+
+  // Hand the browser a chance to paint before the next synchronous chunk of
+  // work blocks the thread.
+  //
+  // Deliberately setTimeout and NOT requestAnimationFrame: rAF is paused
+  // entirely in a backgrounded or hidden tab, so awaiting it stranded the whole
+  // analysis mid-run whenever the user switched tabs. setTimeout is throttled
+  // in the background but still fires, so the work always finishes.
+  yield() { return new Promise(r => setTimeout(r, 0)); },
+  async step(frac, label) { this.set(frac, label); await this.yield(); },
+
+  fail(msg) {
+    if (!this._host) return;
+    this._host.innerHTML = `<div class="status err">${esc(msg)}</div>`;
+    this._host = null;
+  },
+  done() { if (this._host) this._host.innerHTML = ''; this._host = null; },
+};
+
+// Fetch JSON with byte progress.
+//
+// Content-Length is the *compressed* size while the reader yields *decompressed*
+// bytes, and Content-Encoding isn't readable cross-origin — so the ratio can
+// overshoot (a 1.5 MB gzipped body unpacks to 10 MB). When that happens we stop
+// pretending to know the total and report bytes received against an
+// indeterminate bar, rather than showing "10.3 MB of 1.5 MB".
+async function fetchJSONProgress(url, onProgress) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url} (${resp.status})`);
+  const header = +resp.headers.get('content-length') || 0;
+  if (!resp.body || !resp.body.getReader) return resp.json();
+
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0, compressed = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (header && received > header) compressed = true;
+    if (onProgress) {
+      const known = header && !compressed;
+      onProgress(known ? received / header : null, received, known ? header : 0);
+    }
+  }
+  const buf = new Uint8Array(received);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.length; }
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+
+function fmtMB(bytes) { return (bytes / 1e6).toFixed(1) + ' MB'; }

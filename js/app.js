@@ -235,6 +235,7 @@ const App = {
           <button class="btn gold" id="sv-run" disabled>Load Votes</button>
         </div>
         <div class="status" id="sv-status"></div>
+        <div id="sv-progress"></div>
       </div>`;
 
     let sessions;
@@ -271,13 +272,20 @@ const App = {
       const st = $('#sv-state').value, se = $('#sv-session').value;
       const person = Votes.stateMembers.sort((a, b) => a.name.localeCompare(b.name))[+$('#sv-member').value];
       $('#sv-run').disabled = true;
-      setStatus('#sv-status', 'Loading vote record…');
+      setStatus('#sv-status', '');
+      Progress.start('#sv-progress', 'Starting…');
       try {
-        const votes = await Votes.loadStateVotes(st, se, person);
+        const votes = await Votes.loadStateVotes(st, se, person,
+          (f, label) => Progress.set(f, label));
         if (!votes.length) throw new Error('No votes found for this legislator.');
+        // Yield between phases so the bar paints — the analysis below is
+        // synchronous and would otherwise freeze on the last rendered frame.
+        await Progress.step(0.90, `Analyzing ${votes.length.toLocaleString()} votes…`);
         const models = await loadUniverses();
         const topics = Votes.matchVotesToTopics(votes, models);
+        await Progress.step(0.96, 'Scoring keywords against universes…');
         const keywords = Votes.analyzeKeywords(votes, models);
+        await Progress.step(1, 'Building report…');
         const meta = Store.saveProject({
           id: 'st-' + uid(), name: `${person.name} — ${st} Votes`, type: 'state-votes', stance: this.stance(),
           status: 'complete', subject: person.name,
@@ -285,7 +293,7 @@ const App = {
         }, { member: { name: person.name, party: person.party, state: st, district: person.district }, votes, topics, keywords });
         location.hash = '#/report/' + meta.id;
       } catch (e) {
-        setStatus('#sv-status', e.message, 'err');
+        Progress.fail(e.message);
         $('#sv-run').disabled = false;
       }
     };
@@ -310,7 +318,7 @@ const App = {
         <div id="up-chip"></div>
         <div style="margin-top:18px"><button class="btn gold" id="up-run" disabled>${isOppo ? 'Extract Attacks' : 'Analyze Document'}</button></div>
         <div class="status" id="up-status"></div>
-        <div class="progress-track hidden" id="up-track"><div class="progress-fill" id="up-fill"></div></div>
+        <div id="up-progress"></div>
         ${isOppo ? `<div class="notice"><b>Note:</b> in-browser extraction is signal-based and finds candidate hits fast. For the deepest read of a full oppo book, run the Poseidon skill and import its <b>attacks.json</b> here — the dashboard is identical.</div>` : ''}
       </div>`;
 
@@ -331,7 +339,8 @@ const App = {
       if (!file) return;
       $('#up-run').disabled = true;
       $('#up-track').classList.remove('hidden');
-      const onStatus = (msg, frac) => { setStatus('#up-status', msg); if (frac != null) $('#up-fill').style.width = Math.round(frac * 100) + '%'; };
+      Progress.start('#up-progress', 'Reading document…');
+      const onStatus = (msg, frac) => Progress.set(frac == null ? null : frac, msg);
       try {
         const text = await Docs.extractText(file, onStatus);
         const universes = await loadUniverses();
@@ -362,7 +371,7 @@ const App = {
           location.hash = '#/report/' + meta.id;
         }
       } catch (e) {
-        setStatus('#up-status', e.message, 'err');
+        Progress.fail(e.message);
         $('#up-run').disabled = false;
       }
     };
@@ -725,9 +734,11 @@ const App = {
       const skip = Math.max(0, parseInt($('#uni-skip').value, 10) || 0);
       if (!val) return setStatus('#uni-status', 'Paste a sheet link first, or use the bundled list.', 'err');
       setStatus('#uni-status', 'Fetching sheet…');
+      Progress.start('#uni-preview', 'Contacting Google Sheets…'); Progress.set(null);
       $('#uni-preview').innerHTML = '';
       try {
         const names = await fetchSheetNames(val, CONFIG.UNIVERSE_SHEET_GID, skip);
+        Progress.done();
         setUniverseSheet(val, skip);
         setStatus('#uni-status', `Loaded ${names.length} universes ✓ — saved and now in use for oppo, document and news matching.`, 'ok');
         $('#uni-preview').innerHTML = `
@@ -735,6 +746,7 @@ const App = {
           <div class="chipgrid">${names.slice(0, 30).map(n => `<span class="chip">${esc(n)}</span>`).join('')}
           ${names.length > 30 ? `<span class="chip" style="border-style:dashed">+${names.length - 30} more</span>` : ''}</div>`;
       } catch (e) {
+        Progress.done();
         setStatus('#uni-status', `Not saved — ${e.message} The bundled ${POSEIDON_UNIVERSES.length}-universe list stays in use.`, 'err');
       }
     };
@@ -842,7 +854,7 @@ const App = {
       <h1 class="page-title">Projects</h1>
       <div class="page-sub">Every scrape, upload and analysis — ongoing and past. Click a project to open its report.
         &nbsp;<button class="btn ghost sm" onclick="App.importFlow()">Import Project File</button></div>
-      <div id="pr-list"><div class="empty"><div class="glyph">◌</div>Loading…</div></div>`;
+      <div id="pr-list"><div class="empty"><span class="ah-spinner"></span>Loading projects…</div></div>`;
     await News.refreshRunStatus();
     const projects = await Store.allProjects();
     const typeCls = { 'federal-votes': 'votes', 'state-votes': 'votes', 'oppo-book': 'oppo', 'documents': 'docs', 'news-scrape': 'news', 'web-scrape': 'web' };

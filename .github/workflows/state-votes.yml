@@ -39,16 +39,37 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Check the secret resolved before doing anything else. Secrets are
+      # per-repo and per-scope: one created on another repo, or as a Codespaces
+      # or Dependabot secret, is invisible here and produced an opaque failure.
+      - name: Check OpenStates key is available
+        env:
+          OPENSTATES_KEY: ${{ secrets.OpenStates_Key }}
+        run: |
+          if [ -z "${OPENSTATES_KEY}" ]; then
+            echo "::error::Secret 'OpenStates_Key' is empty or not visible to this workflow."
+            echo "Add it under Settings -> Secrets and variables -> Actions -> Repository secrets"
+            echo "on knunnenkamp25/ArtemisHera (not the data repo, and not a Codespaces secret)."
+            exit 1
+          fi
+          echo "Key present (${#OPENSTATES_KEY} characters)."
+
       - name: Refresh requested session
         if: github.event_name == 'workflow_dispatch'
         env:
           OPENSTATES_KEY: ${{ secrets.OpenStates_Key }}
+          STATE: ${{ inputs.state }}
+          SESSION_IN: ${{ inputs.session }}
+          SINCE_IN: ${{ inputs.since }}
         run: |
-          SESSION="${{ inputs.session }}"
-          [ -z "$SESSION" ] && SESSION=$(date +%Y)
-          ARGS="--state '${{ inputs.state }}' --session $SESSION"
-          [ -n "${{ inputs.since }}" ] && ARGS="$ARGS --since ${{ inputs.since }}"
-          eval python scripts/refresh_openstates.py $ARGS
+          SESSION="${SESSION_IN:-$(date +%Y)}"
+          # Pass args directly — the previous `eval` mangled state names
+          # containing spaces ("New York", "North Carolina").
+          if [ -n "${SINCE_IN}" ]; then
+            python scripts/refresh_openstates.py --state "${STATE}" --session "${SESSION}" --since "${SINCE_IN}"
+          else
+            python scripts/refresh_openstates.py --state "${STATE}" --session "${SESSION}"
+          fi
 
       # Refresh the current session for every state already in data/state/.
       # Budget is shared, so cap per-state requests to stay well under 500/day.
