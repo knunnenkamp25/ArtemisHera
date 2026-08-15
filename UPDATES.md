@@ -91,5 +91,11 @@ names internal next steps:
 - [ ] **News content quality** — the Richmond scrape returned 48 articles but
       largely syndicated entertainment filler, and only 6 of 24 outlets produced
       anything. Pipeline works; the *content* may need filtering
+- [ ] **Re-run the Long Island scrape after pushing** — run 31822970969 died
+      because CI-only CDN hostility hit three fatal paths in the scraper
+      (date-form Retry-After, unguarded WP-API size probes, no per-site
+      isolation). Fixed in c1bce76; the workflow runs whatever is on main, so
+      push before re-running. Use "Re-run Scrape" on the failed project —
+      the parameters were saved
 - [ ] **LegiScan** — survey submitted; would fill pre-2017 history and the Texas
       gap (Open States publishes no recent Texas floor votes)
