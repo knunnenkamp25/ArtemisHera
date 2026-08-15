@@ -35,6 +35,7 @@ import time
 import logging
 import argparse
 import hashlib
+import traceback
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, fields, asdict
@@ -461,6 +462,30 @@ def discover_links_from_rss(fetcher: "PageFetcher", site_url: str) -> list[str]:
     return []
 
 
+def _retry_after_seconds(resp, default: float, cap: float = 120.0) -> float:
+    """Parse a Retry-After header defensively.
+
+    RFC 7231 allows either delta-seconds OR an HTTP-date — float() on a date
+    raises ValueError, which took down an entire 88-site cloud run when one
+    CDN sent the date form. Capped because a hostile/buggy header ("86400")
+    must not stall a CI run for a day.
+    """
+    value = resp.headers.get("Retry-After")
+    if not value:
+        return min(default, cap)
+    try:
+        return max(0.0, min(float(value), cap))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(value)
+        delta = (dt - datetime.now(dt.tzinfo)).total_seconds()
+        return max(0.0, min(delta, cap))
+    except Exception:
+        return min(default, cap)
+
+
 def scrape_articles_from_wp_api(
     fetcher: "PageFetcher", site_url: str, site_domain: str
 ) -> list["Article"]:
@@ -492,7 +517,7 @@ def scrape_articles_from_wp_api(
             return []
         log.info(f"  WP API probe status: {header_resp.status_code} (attempt {probe_attempt}/3)")
         if header_resp.status_code == 429:
-            wait = float(header_resp.headers.get("Retry-After", probe_backoff))
+            wait = _retry_after_seconds(header_resp, probe_backoff)
             log.info(f"  WP API probe 429 — waiting {wait:.0f}s before retry...")
             time.sleep(wait)
             probe_backoff = min(probe_backoff * 2, 120)
@@ -529,17 +554,28 @@ def scrape_articles_from_wp_api(
     # Auto-detect the largest batch size the server will accept without 429ing.
     # Try 50 first (fewer total requests), fall back to 10 if the site is strict.
     WP_PAGE_SIZE = 50
-    _size_probe = fetcher.discovery_session.get(
-        f"{api_base}?per_page={WP_PAGE_SIZE}&page=1", timeout=REQUEST_TIMEOUT
-    )
-    if _size_probe.status_code == 429:
-        wait = float(_size_probe.headers.get("Retry-After", 15))
-        log.info(f"  per_page=50 rate-limited — waiting {wait:.0f}s then trying per_page=10...")
-        time.sleep(wait)
-        WP_PAGE_SIZE = 10
+    # Both probes guarded: the earlier ?per_page=1 probe succeeding is no
+    # guarantee this one will — CDNs reset exactly these larger requests, and
+    # an uncaught ConnectionError here killed whole cloud runs.
+    try:
         _size_probe = fetcher.discovery_session.get(
             f"{api_base}?per_page={WP_PAGE_SIZE}&page=1", timeout=REQUEST_TIMEOUT
         )
+    except Exception as e:
+        log.info(f"  WP API bulk probe failed — skipping ({e})")
+        return []
+    if _size_probe.status_code == 429:
+        wait = _retry_after_seconds(_size_probe, 15)
+        log.info(f"  per_page=50 rate-limited — waiting {wait:.0f}s then trying per_page=10...")
+        time.sleep(wait)
+        WP_PAGE_SIZE = 10
+        try:
+            _size_probe = fetcher.discovery_session.get(
+                f"{api_base}?per_page={WP_PAGE_SIZE}&page=1", timeout=REQUEST_TIMEOUT
+            )
+        except Exception as e:
+            log.info(f"  WP API bulk probe failed — skipping ({e})")
+            return []
 
     all_articles: list[Article] = []
     author_id_map: dict[int, str] = {}
@@ -583,7 +619,7 @@ def scrape_articles_from_wp_api(
                 log.warning(f"    WP API page {page} request error: {e}")
                 break
             if resp.status_code == 429:
-                wait = float(resp.headers.get("Retry-After", backoff))
+                wait = _retry_after_seconds(resp, backoff)
                 log.warning(
                     f"    WP API 429 on page {page} (attempt {attempt}/4) "
                     f"— waiting {wait:.0f}s..."
@@ -2607,12 +2643,19 @@ def main():
                 for site_url in site_list:
                     if not site_url.startswith("http"):
                         site_url = "https://" + site_url
-                    articles = scrape_site(
-                        fetcher, site_url,
-                        debug_html_path=args.debug_html,
-                        debug_article_path=args.debug_article,
-                        target_dates=target_dates,
-                    )
+                    # Same per-site isolation as flat mode below.
+                    try:
+                        articles = scrape_site(
+                            fetcher, site_url,
+                            debug_html_path=args.debug_html,
+                            debug_article_path=args.debug_article,
+                            target_dates=target_dates,
+                        )
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        log.error(f"  SITE FAILED (continuing): {site_url}\n{traceback.format_exc()}")
+                        continue
                     group_articles.extend(articles)
                     log.info(f"  Collected {len(articles)} articles from {site_url}\n")
 
@@ -2677,18 +2720,36 @@ def main():
     fetcher = PageFetcher(use_selenium=args.selenium)
 
     all_articles = []
+    failed_sites = []
     try:
         for site_url in urls:
-            articles = scrape_site(
-                fetcher, site_url,
-                debug_html_path=args.debug_html,
-                debug_article_path=args.debug_article,
-                target_dates=target_dates,
-            )
+            # One site must never take down the run: on GitHub-runner IPs the
+            # big CDNs throw connection resets and challenge pages that a
+            # residential connection never sees, and a multi-hundred-site
+            # scrape losing everything to one of them is worse than losing
+            # that one site.
+            try:
+                articles = scrape_site(
+                    fetcher, site_url,
+                    debug_html_path=args.debug_html,
+                    debug_article_path=args.debug_article,
+                    target_dates=target_dates,
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                failed_sites.append(site_url)
+                log.error(f"  SITE FAILED (continuing): {site_url}\n{traceback.format_exc()}")
+                continue
             all_articles.extend(articles)
             log.info(f"  Collected {len(articles)} articles from {site_url}\n")
     finally:
         fetcher.close()
+
+    if failed_sites:
+        print(f"\n⚠ {len(failed_sites)} site(s) crashed and were skipped:")
+        for u in failed_sites:
+            print(f"    {u}")
 
     if all_articles:
         # In --today / --date mode, append to the xlsx so each day's run adds
