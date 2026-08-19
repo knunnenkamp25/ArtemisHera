@@ -1,5 +1,15 @@
 [
   {
+    "id": "fed-mt0h4nyt-ojm5f",
+    "name": "JAMES, John \u2014 Federal Votes",
+    "type": "federal-votes",
+    "status": "complete",
+    "subject": "JAMES, John",
+    "summary": "1878 votes \u00b7 Congress 118\u2013119",
+    "created": "2026-08-19T19:18:08.703087Z",
+    "updated": "2026-08-19T19:18:08.703087Z"
+  },
+  {
     "id": "scr-mt0gmxzg-k3psl",
     "name": "New York, NY - CT - NJ - PA News \u2014 8/19/2026",
     "type": "news-scrape",
