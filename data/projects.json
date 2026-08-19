@@ -1,5 +1,15 @@
 [
   {
+    "id": "scr-mt0gmxzg-k3psl",
+    "name": "New York, NY - CT - NJ - PA News \u2014 8/19/2026",
+    "type": "news-scrape",
+    "status": "complete",
+    "subject": "Cloud scrape",
+    "summary": "47 articles collected",
+    "created": "2026-08-19T19:04:42.994662Z",
+    "updated": "2026-08-19T19:04:42.994662Z"
+  },
+  {
     "id": "scr-mt0edulx-x0yxi",
     "name": "New York, NY - CT - NJ - PA News \u2014 8/19/2026",
     "type": "news-scrape",
