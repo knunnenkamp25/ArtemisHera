@@ -46,16 +46,20 @@ const News = {
     const runs = await GH.recentRuns();
     for (const proj of running) {
       const run = runs.find(r => (r.name || '').includes(proj.id) || (r.display_title || '').includes(proj.id));
-      if (run) {
-        if (run.status === 'completed') {
-          proj.status = run.conclusion === 'success' ? 'complete' : 'failed';
-          Store.saveProject(proj);
+      // Status flips are best-effort: a quota throw out of saveProject would
+      // reject refreshRunStatus and blank the whole Projects page.
+      try {
+        if (run) {
+          if (run.status === 'completed') {
+            proj.status = run.conclusion === 'success' ? 'complete' : 'failed';
+            Store.saveProject(proj);
+          }
+        } else {
+          // No matching run and results exist → completed before we ever polled
+          const data = await this.fetchResults(proj.id);
+          if (data) { proj.status = 'complete'; Store.saveProject(proj); }
         }
-      } else {
-        // No matching run and results exist → completed before we ever polled
-        const data = await this.fetchResults(proj.id);
-        if (data) { proj.status = 'complete'; Store.saveProject(proj); }
-      }
+      } catch (e) { console.warn('Could not update run status:', e.message); }
     }
   },
 };

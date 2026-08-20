@@ -871,9 +871,15 @@ const App = {
     if (!meta) meta = { id, name: 'News Scrape', type: 'news-scrape', status: 'running' };
     const data = await News.fetchResults(id);
     if (data) {
-      if (meta.status !== 'complete' && meta.origin === 'local') { meta.status = 'complete'; Store.saveProject(meta); }
-      // cache keywords locally so Hera can use them
-      if (meta.origin !== 'repo') Store.saveProject(meta, { keywords: data.keywords || [], articleCount: (data.articles || []).length });
+      // Caching is best-effort, same rule as the cloud vote path: these writes
+      // hit the localStorage quota on browsers holding several cached vote
+      // reports, and an uncaught throw here left the click doing nothing at
+      // all — hash changed, report never rendered.
+      try {
+        if (meta.status !== 'complete' && meta.origin === 'local') { meta.status = 'complete'; Store.saveProject(meta); }
+        // cache keywords locally so Hera can use them
+        if (meta.origin !== 'repo') Store.saveProject(meta, { keywords: data.keywords || [], articleCount: (data.articles || []).length });
+      } catch (e) { console.warn('Could not cache news results locally:', e.message); }
       return Report.renderNews(meta, data);
     }
     // still running
