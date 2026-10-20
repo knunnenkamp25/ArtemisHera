@@ -39,12 +39,19 @@ const News = {
 
   fetchResults(projectId) { return fetchRepoJSON(`data/news/${projectId}.json`); },
 
+  // Which workflow produces each cloud project type (for status polling)
+  WORKFLOW_FOR: { 'news-scrape': () => CONFIG.GH_WORKFLOW, 'web-scrape': () => CONFIG.GH_WORKFLOW,
+                  'topic-search': () => CONFIG.GH_TOPIC_WORKFLOW },
+
   async refreshRunStatus() {
-    // Reconcile locally-tracked "running" scrape projects against Actions runs
-    const running = Store._index().filter(p => p.status === 'running' && (p.type === 'news-scrape' || p.type === 'web-scrape'));
+    // Reconcile locally-tracked "running" cloud projects against Actions runs
+    const running = Store._index().filter(p => p.status === 'running' && this.WORKFLOW_FOR[p.type]);
     if (!running.length || !GH.hasToken()) return;
-    const runs = await GH.recentRuns();
+    const runCache = {};
     for (const proj of running) {
+      const wf = this.WORKFLOW_FOR[proj.type]();
+      if (!runCache[wf]) runCache[wf] = await GH.recentRuns(wf);
+      const runs = runCache[wf];
       const run = runs.find(r => (r.name || '').includes(proj.id) || (r.display_title || '').includes(proj.id));
       // Status flips are best-effort: a quota throw out of saveProject would
       // reject refreshRunStatus and blank the whole Projects page.
@@ -56,7 +63,7 @@ const News = {
           }
         } else {
           // No matching run and results exist → completed before we ever polled
-          const data = await this.fetchResults(proj.id);
+          const data = await fetchRepoPayload(proj);
           if (data) { proj.status = 'complete'; Store.saveProject(proj); }
         }
       } catch (e) { console.warn('Could not update run status:', e.message); }

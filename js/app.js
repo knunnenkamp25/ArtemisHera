@@ -37,6 +37,7 @@ const App = {
       { id: 'docs', title: 'Upload Documents', desc: 'Analyze any document — mailers, transcripts, filings, reports. Extracts significant keywords and maps them to voter universes.', icon: g('<path d="M4 5 H20 V19 H4 Z"/><path d="M7 9 H17 M7 12 H17 M7 15 H12"/>') },
       { id: 'news', title: 'Begin News Scrape', desc: 'Pick a state or DMA and scrape every local outlet in it — 3,140 sites built in. Runs in the cloud; results land on a live intelligence page.', icon: g('<path d="M4 4 H16 V20 H4 Z"/><path d="M16 8 H20 V20 H16"/><path d="M7 8 H13 M7 11.5 H13 M7 15 H13"/>') },
       { id: 'web', title: 'Scrape Web Pages', desc: `Manually enter up to ${CONFIG.MAX_MANUAL_URLS} specific pages or sites to scrape and analyze — one-off targets outside your standing site list.`, icon: g('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12 H20.5 M12 3.5 C15 7 15 17 12 20.5 C9 17 9 7 12 3.5"/>') },
+      { id: 'topic', title: 'Search Votes by Topic', desc: 'Start from an issue instead of a legislator — data centers, school choice, anything. Finds every state bill that matches your phrases and shows who voted how, by party.', icon: g('<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15 L20.5 20.5"/><path d="M8 10.5 H13 M10.5 8 V13"/>') },
     ];
     $('#view').innerHTML = `
       <h1 class="page-title">What do you want to work on?</h1>
@@ -62,6 +63,7 @@ const App = {
       case 'docs': return this.setupUpload('docs');
       case 'news': return this.setupNews();
       case 'web': return this.setupWeb();
+      case 'topic': return this.setupTopic();
     }
     this.home();
   },
@@ -520,6 +522,97 @@ const App = {
     };
   },
 
+  /* Topic search — phrases × states × years over the state vote library */
+  async setupTopic() {
+    $('#view').innerHTML = `
+      ${this.header('Search Votes by Topic', 'Scans every state legislative session in the vote library for bills matching your phrases, then builds the full roll call for each — every legislator\'s vote, with party and district. Runs in the cloud; results land on a report page.')}
+      <div class="card panel">
+        ${this.stanceControl()}
+        <label class="fld">Project Name</label>
+        <input type="text" id="tp-name" placeholder="e.g. Data Center Bills — Mid-Atlantic" style="max-width:420px">
+        <label class="fld">Phrases to Match <span style="text-transform:none;letter-spacing:0">(one per line — a bill matches if its title or vote description contains any of them; plurals are automatic)</span></label>
+        <textarea id="tp-phrases" rows="4" placeholder="data center&#10;high energy use facility&#10;hyperscale" style="max-width:520px"></textarea>
+        <div class="row" style="margin-top:4px">
+          <div class="grow"><label class="fld">States <span style="text-transform:none;letter-spacing:0">(leave empty for all)</span></label>
+            <select id="tp-states" multiple size="9"><option disabled>Loading…</option></select></div>
+          <div style="width:170px"><label class="fld">From Year</label>
+            <select id="tp-from"><option>2026</option><option>2025</option><option>2024</option><option>2023</option><option selected>2022</option><option>2020</option><option>2018</option><option>2015</option><option>2010</option></select></div>
+          <div style="width:170px"><label class="fld">To Year</label>
+            <select id="tp-to"><option value="" selected>Present</option><option>2026</option><option>2025</option><option>2024</option><option>2023</option><option>2022</option><option>2020</option></select></div>
+        </div>
+        <div class="notice" id="tp-count" style="display:none"></div>
+        <div style="margin-top:14px"><button class="btn gold" id="tp-run" disabled>Launch Search</button></div>
+        <div class="status" id="tp-status"></div>
+        ${this.tokenNotice()}
+      </div>`;
+
+    let sessions = {};
+    try {
+      sessions = await Votes.loadStateSessions();
+    } catch (e) { return setStatus('#tp-status', 'Could not load the state session index: ' + e.message, 'err'); }
+    const states = Object.keys(sessions).sort();
+    $('#tp-states').innerHTML = states.map(s =>
+      `<option value="${s}">${esc(sessions[s].state_name || s)} (${(sessions[s].sessions || []).length})</option>`).join('');
+
+    const phrases = () => $('#tp-phrases').value.split(/\n+/).map(p => p.trim()).filter(Boolean);
+    const refresh = () => {
+      const stSel = [...$('#tp-states').selectedOptions].map(o => o.value);
+      const from = +$('#tp-from').value, to = +($('#tp-to').value || 9999);
+      const pool = (stSel.length ? stSel : states).flatMap(s => (sessions[s].sessions || [])
+        .filter(x => x.year_end >= from && x.year_start <= to));
+      const n = pool.length;
+      $('#tp-count').style.display = n ? 'block' : 'none';
+      // ~1.5 MB per session scanned 12 at a time, plus the vote files of
+      // sessions that match; a nationwide 2022+ scan runs about 3–6 minutes.
+      $('#tp-count').innerHTML = `<b>${n} sessions in ${stSel.length || states.length} state${(stSel.length || states.length) === 1 ? '' : 's'}.</b> Estimated run: ~${Math.max(1, Math.round(n / 40))}–${Math.max(2, Math.round(n / 25))} minutes.`;
+      $('#tp-run').disabled = !n || !phrases().length;
+    };
+    ['tp-states', 'tp-from', 'tp-to'].forEach(id => $('#' + id).onchange = refresh);
+    $('#tp-phrases').addEventListener('input', refresh);
+    refresh();
+
+    $('#tp-run').onclick = () => {
+      const ph = phrases();
+      if (!ph.length) return setStatus('#tp-status', 'Enter at least one phrase.', 'err');
+      if (ph.some(p => p.includes('|'))) return setStatus('#tp-status', 'Phrases cannot contain "|".', 'err');
+      const stSel = [...$('#tp-states').selectedOptions].map(o => o.value);
+      this.launchTopicFlow({
+        projectName: $('#tp-name').value.trim() || `${ph[0]} — ${stSel.length ? stSel.join(', ') : 'all states'} ${new Date().toLocaleDateString()}`,
+        phrases: ph, states: stSel, fromYear: +$('#tp-from').value, toYear: $('#tp-to').value,
+        stance: this.stance(),
+      });
+    };
+  },
+
+  async launchTopicFlow(opts) {
+    if (!GH.hasToken()) return this.promptForToken(() => this.launchTopicFlow(opts));
+    setStatus('#tp-status', 'Dispatching workflow…');
+    try {
+      const projectId = 'tp-' + uid();
+      await GH.dispatchWorkflow(CONFIG.GH_TOPIC_WORKFLOW, {
+        project_id: projectId, project_name: opts.projectName,
+        phrases: opts.phrases.join('|'), states: opts.states.join(','),
+        from_year: String(opts.fromYear), to_year: String(opts.toYear || ''),
+      });
+      Store.saveProject({
+        id: projectId, name: opts.projectName, type: 'topic-search', stance: opts.stance,
+        status: 'running', subject: opts.phrases.join(', '),
+        summary: `${opts.phrases.length} phrase${opts.phrases.length === 1 ? '' : 's'} · ${opts.states.length ? opts.states.join(', ') : 'all states'} · ${opts.fromYear}+`,
+        params: opts,
+      });
+      setStatus('#tp-status', 'Search launched ✓ — tracking as a running project.', 'ok');
+      setTimeout(() => location.hash = '#/report/' + projectId, 900);
+    } catch (e) {
+      if (e.message === 'BAD_TOKEN') {
+        GH.setToken('');
+        setStatus('#tp-status', 'GitHub rejected the saved token — it was revoked or expired. Re-connecting…', 'err');
+        this.promptForToken(() => this.launchTopicFlow(opts));
+      } else {
+        setStatus('#tp-status', e.message, 'err');
+      }
+    }
+  },
+
   tokenNotice() {
     return GH.hasToken()
       ? `<div class="notice">GitHub connected ✓ — scrapes launch directly. <a href="#/settings">Manage connection</a></div>`
@@ -821,6 +914,7 @@ const App = {
     const meta = Store.getMeta(id) || (await Store.repoProjects()).find(p => p.id === id);
     if (!meta) return this.notFound();
     if (meta.type === 'news-scrape' || meta.type === 'web-scrape') return this.openNews(id);
+    if (meta.type === 'topic-search') return this.openTopic(id, meta);
 
     let payload = Store.getPayload(id);
     // Cloud federal-vote runs land in data/federal/{id}.json
@@ -864,6 +958,35 @@ const App = {
       return;
     }
     this._votePoll = setTimeout(() => { if (location.hash === '#/report/' + meta.id) this.openReport(meta.id); }, 25000);
+  },
+
+  // Topic searches are cloud runs: results live in data/topics/{id}.json and
+  // are too large to cache in localStorage, so they are fetched on every open.
+  async openTopic(id, meta) {
+    const data = await fetchRepoPayload({ id, type: 'topic-search' });
+    if (data) {
+      try {
+        if (meta.status !== 'complete' && meta.origin === 'local') { meta.status = 'complete'; Store.saveProject(meta); }
+      } catch (e) { console.warn('Could not update project status:', e.message); }
+      return Report.renderTopic(meta, data);
+    }
+    await News.refreshRunStatus();
+    const fresh = Store.getMeta(id) || meta;
+    $('#view').innerHTML = `
+      ${Report.crumbs(fresh.name)}
+      <h1 class="page-title">${esc(fresh.name)}</h1>
+      <div class="page-sub"><span class="status-dot ${fresh.status}"></span>&nbsp; ${fresh.status === 'failed' ? 'The search run failed — check the Actions log on GitHub.' : 'Search in progress — the cloud workflow is scanning the vote library. This page refreshes automatically.'}</div>
+      <div class="empty card">
+        <div class="glyph">⟳</div>
+        <p>${fresh.status === 'failed'
+          ? `Run failed. <a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener">Open the Actions log</a> to see why, then relaunch.`
+          : 'Results appear here as soon as the workflow commits them (typically 2–6 minutes; a nationwide scan from 2010 can take 15).'}</p>
+        <p style="margin-top:12px"><a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener" class="btn ghost sm">View run status on GitHub</a></p>
+      </div>`;
+    if (fresh.status !== 'failed') {
+      clearTimeout(this._topicPoll);
+      this._topicPoll = setTimeout(() => { if (location.hash === '#/report/' + id) this.openTopic(id, fresh); }, 30000);
+    }
   },
 
   async openNews(id) {
@@ -911,8 +1034,8 @@ const App = {
       <div id="pr-list"><div class="empty"><span class="ah-spinner"></span>Loading projects…</div></div>`;
     await News.refreshRunStatus();
     const projects = await Store.allProjects();
-    const typeCls = { 'federal-votes': 'votes', 'state-votes': 'votes', 'oppo-book': 'oppo', 'documents': 'docs', 'news-scrape': 'news', 'web-scrape': 'web' };
-    const typeName = { 'federal-votes': 'Federal Votes', 'state-votes': 'State Votes', 'oppo-book': 'Oppo Book', 'documents': 'Documents', 'news-scrape': 'News Scrape', 'web-scrape': 'Web Scrape' };
+    const typeCls = { 'federal-votes': 'votes', 'state-votes': 'votes', 'oppo-book': 'oppo', 'documents': 'docs', 'news-scrape': 'news', 'web-scrape': 'web', 'topic-search': 'topic' };
+    const typeName = { 'federal-votes': 'Federal Votes', 'state-votes': 'State Votes', 'oppo-book': 'Oppo Book', 'documents': 'Documents', 'news-scrape': 'News Scrape', 'web-scrape': 'Web Scrape', 'topic-search': 'Topic Search' };
     $('#pr-list').innerHTML = projects.length ? `<div class="proj-grid">${projects.map(p => `
       <div class="card proj-card" data-id="${esc(p.id)}">
         <div class="top">

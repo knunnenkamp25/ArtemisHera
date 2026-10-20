@@ -163,9 +163,11 @@ const GH = {
     }
   },
 
-  async dispatchScrape(inputs) {
+  async dispatchScrape(inputs) { return this.dispatchWorkflow(CONFIG.GH_WORKFLOW, inputs); },
+
+  async dispatchWorkflow(workflow, inputs) {
     const resp = await this.api(
-      `/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows/${CONFIG.GH_WORKFLOW}/dispatches`,
+      `/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows/${workflow}/dispatches`,
       { method: 'POST', body: JSON.stringify({ ref: 'main', inputs }) }
     );
     if (resp.status !== 204) {
@@ -175,13 +177,27 @@ const GH = {
     return true;
   },
 
-  async recentRuns() {
+  async recentRuns(workflow = CONFIG.GH_WORKFLOW) {
     try {
       const resp = await this.api(
-        `/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows/${CONFIG.GH_WORKFLOW}/runs?per_page=15`);
+        `/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions/workflows/${workflow}/runs?per_page=15`);
       if (!resp.ok) return [];
       const data = await resp.json();
       return data.workflow_runs || [];
     } catch (e) { return []; }
   },
 };
+
+// Where each cloud project type's results land in the repo. Hera and the
+// report router both need this; keeping it in one place means a new cloud
+// type is one line here rather than a special case in each.
+const REPO_RESULTS = {
+  'news-scrape': id => `data/news/${id}.json`,
+  'web-scrape': id => `data/news/${id}.json`,
+  'federal-votes': id => `data/federal/${id}.json`,
+  'topic-search': id => `data/topics/${id}.json`,
+};
+function fetchRepoPayload(meta) {
+  const path = REPO_RESULTS[meta.type];
+  return path ? fetchRepoJSON(path(meta.id)) : Promise.resolve(null);
+}

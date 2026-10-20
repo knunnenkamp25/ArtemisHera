@@ -65,6 +65,34 @@ const Hera = {
       }));
     }
 
+    if (meta.type === 'topic-search' && payload.bills) {
+      // The topic itself: which universes the matched bills touch
+      const topic = (payload.meta?.phrases || [meta.subject || 'the issue']).join(' / ');
+      (payload.topics || []).slice(0, 5).forEach(t => hits.push({
+        kind: 'theme',
+        line: `${t.bills} ${topic} bill${t.bills === 1 ? '' : 's'} in play touch the ${t.model} universe`,
+        detail: `${t.passed} passed, ${t.failed} failed or pending across ${(payload.meta?.states_hit || []).join(', ')}. Matched on: ${(t.matchedKeywords || []).slice(0, 6).join(', ')}.`,
+        severity: t.bills >= 10 ? 'Major' : t.bills >= 4 ? 'Moderate' : 'Minor',
+        universes: [t.model], category: 'Legislative Agenda',
+      }));
+      // The players: legislators with the most floor votes on the topic
+      const uni = payload.topics?.[0]?.model;
+      (payload.legislators || []).slice(0, 10).forEach(L => {
+        const lean = L.yes >= L.no ? 'YES' : 'NO';
+        const n = Math.max(L.yes, L.no);
+        const who = `${L.name} (${(L.party || '?')[0]}-${L.state}${L.district ? ' ' + L.district : ''})`;
+        hits.push({
+          kind: stance === 'support' ? 'record' : 'attack',
+          line: stance === 'support'
+            ? `${who} has a record on ${topic}: ${n} ${lean} votes across ${L.bills.length} bill${L.bills.length === 1 ? '' : 's'}`
+            : `${who} voted ${lean} on ${n} of ${L.votes} ${topic} floor votes`,
+          detail: `${L.yes} Yes / ${L.no} No / ${L.other} other on: ${L.bills.slice(0, 6).join(', ')}${L.bills.length > 6 ? ' …' : ''}.`,
+          severity: L.votes >= 8 ? 'Major' : L.votes >= 3 ? 'Moderate' : 'Minor',
+          universes: uni ? [uni] : [], category: 'Voting Record',
+        });
+      });
+    }
+
     if ((meta.type === 'news-scrape' || meta.type === 'web-scrape') && payload.keywords) {
       payload.keywords.filter(k => k.universe_match).slice(0, 8).forEach(k => hits.push({
         kind: 'theme',
@@ -455,9 +483,15 @@ const Hera = {
         Progress.done();
         if (meta && meta.origin === 'repo' && !payload) {
           setStatus('#hera-status', 'Loading project results…');
-          News.fetchResults(id).then(data => {
+          fetchRepoPayload(meta).then(data => {
             if (!data) return setStatus('#hera-status', 'Could not load results for this project yet.', 'err');
-            Store.saveProject({ ...meta }, { keywords: data.keywords || [] });
+            // Topic results carry the bills and players Hera reads; news only
+            // needs its keyword list (the article bodies would blow the quota).
+            const slim = meta.type === 'topic-search'
+              ? { meta: data.meta, bills: [], legislators: (data.legislators || []).slice(0, 40), topics: data.topics || [], keywords: data.keywords || [] }
+              : { keywords: data.keywords || [] };
+            if (meta.type === 'topic-search') slim.bills = (data.bills || []).slice(0, 1).map(b => ({ bill: b.bill }));
+            try { Store.saveProject({ ...meta }, slim); } catch (e) { console.warn('Not cached:', e.message); }
             btn.onclick();
           });
           return;

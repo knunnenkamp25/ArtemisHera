@@ -9,6 +9,7 @@ const CONFIG = {
   GH_REPO: 'ArtemisHera',
   GH_WORKFLOW: 'scrape.yml',
   GH_VOTES_WORKFLOW: 'federal-votes.yml',
+  GH_TOPIC_WORKFLOW: 'topic-search.yml',
 
   // Universe sheet — the single source of truth for ALL matching (votes, oppo
   // books, documents, news). A default can be baked in here, but the Settings

@@ -414,6 +414,175 @@ const Report = {
       ['word', 'count', 'universe_match', 'universe_score']), 'text/csv');
   },
 
+  /* ══════════════════ TOPIC SEARCH REPORT ══════════════════ */
+  // Bill-centric: which bills matched, then expand any bill into its roll
+  // calls with party splits and every legislator's vote. The side panel ranks
+  // the players — legislators with the most floor votes on the topic.
+  renderTopic(meta, data) {
+    const bills = data.bills || [];
+    const legislators = data.legislators || [];
+    const m = data.meta || {};
+    this.state = { meta, data, bills, filtered: [...bills], tq: '', tState: '', tChamber: '', tResult: '',
+                   floorOnly: true, activeLegislator: '', tPage: 1 };
+    const stance = meta.stance === 'support';
+    const states = [...new Set(bills.map(b => b.state))].sort();
+    const chambers = [...new Set(bills.flatMap(b => b.chambers || []))].sort();
+    const partyCounts = {};
+    legislators.forEach(L => { partyCounts[L.party] = (partyCounts[L.party] || 0) + 1; });
+
+    $('#view').innerHTML = `
+      ${this.crumbs(meta.name)}
+      <h1 class="page-title">${esc(meta.name)}</h1>
+      <div class="page-sub"><span class="stance-tag ${stance ? 'support' : 'oppose'}">${stance ? '▲ Supporting' : '▼ Opposing'}</span>
+        &nbsp;Topic search · ${(m.phrases || []).map(p => `<b>${esc(p)}</b>`).join(', ')} · ${m.states?.length ? esc(m.states.join(', ')) : 'all states'} · ${esc(String(m.from_year || ''))}${m.to_year ? '–' + esc(String(m.to_year)) : '+'}
+        · Generated ${fmtDate(m.generated_at || meta.updated)}
+        &nbsp;<button class="btn gold sm" onclick="location.hash='#/hera?project=${meta.id}'">Build Campaign →</button></div>
+      ${m.truncated ? `<div class="notice"><b>Capped:</b> more than ${bills.length} bills matched — narrow the states or years, or use more specific phrases.</div>` : ''}
+      ${m.errors?.length ? `<div class="notice">${m.errors.length} session file${m.errors.length === 1 ? '' : 's'} could not be read and were skipped.</div>` : ''}
+
+      <div class="stats">
+        <div class="stat"><div class="lbl">Bills</div><div class="val gold">${bills.length}</div></div>
+        <div class="stat"><div class="lbl">States</div><div class="val pine">${states.length}</div></div>
+        <div class="stat"><div class="lbl">Floor Roll Calls</div><div class="val pine">${m.floor_rollcalls ?? bills.reduce((n, b) => n + (b.floor_rollcalls || 0), 0)}</div></div>
+        <div class="stat"><div class="lbl">Legislators on Record</div><div class="val pine">${legislators.length}</div></div>
+        <div class="stat"><div class="lbl">Sessions Scanned</div><div class="val niche">${m.sessions_scanned ?? '—'}</div></div>
+      </div>
+
+      ${(data.topics || []).length ? `
+      <div class="section-h"><h2>Universes This Topic Touches</h2><span class="hint">bills matched to targeting universes · gold = strong evidence</span></div>
+      <div class="chipgrid">${data.topics.slice(0, 24).map(t =>
+        `<span class="chip kw ${t.strongPct >= 70 ? 'hot' : ''}" title="${esc((t.matchedKeywords || []).join(', '))}">${esc(t.model)}<span class="n">${t.bills}</span></span>`).join('')}</div>` : ''}
+
+      <div class="news-layout" style="margin-top:22px">
+        <div class="news-side">
+          <div class="card side-panel">
+            <h4>The Players</h4>
+            <div style="font-size:11.5px;color:var(--bark);margin-bottom:8px">Floor votes on matched bills${Object.keys(partyCounts).length ? ' · ' + Object.entries(partyCounts).map(([p, n]) => `${esc(p.slice(0, 3))} ${n}`).join(' · ') : ''}</div>
+            <div class="src-item ${!this.state.activeLegislator ? 'active' : ''}" data-leg="">All legislators <span class="n">${bills.length} bills</span></div>
+            ${legislators.slice(0, 40).map(L => `
+              <div class="src-item" data-leg="${esc(L.state + ':' + L.people_id)}" title="${esc(L.bills.join(', '))}">
+                <span>${esc(L.name)} <span style="color:var(--tan);font-size:11px">${esc((L.party || '?')[0])}-${esc(L.state)}${L.district ? ' ' + esc(String(L.district)) : ''}</span></span>
+                <span class="n" title="Yes / No"><span style="color:var(--pine)">${L.yes}</span>/<span style="color:var(--sev-major)">${L.no}</span></span>
+              </div>`).join('')}
+            ${legislators.length > 40 ? `<div style="font-size:11.5px;color:var(--tan);padding:6px 8px">+${legislators.length - 40} more in the CSV export</div>` : ''}
+          </div>
+        </div>
+        <div>
+          <div class="filterbar" style="margin-top:0">
+            <input type="search" id="tp-search" placeholder="Search bills…">
+            <select id="tp-state"><option value="">All states</option>${states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
+            <select id="tp-chamber"><option value="">Both chambers</option>${chambers.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+            <select id="tp-result"><option value="">Any result</option><option value="pass">Passed</option><option value="fail">Failed</option></select>
+            <label style="font-size:12.5px;color:var(--bark);display:flex;align-items:center;gap:5px;text-transform:none;letter-spacing:0;margin:0"><input type="checkbox" id="tp-floor" checked style="width:auto;margin:0"> floor votes only</label>
+            <span class="count" id="tp-count"></span>
+            <button class="btn ghost sm" onclick="Report.exportTopicBillsCSV()">Export Bills CSV</button>
+            <button class="btn ghost sm" onclick="Report.exportTopicVotesCSV()">Export Votes CSV</button>
+          </div>
+          <div class="tablewrap"><table>
+            <thead><tr><th style="width:30px"></th><th>State</th><th>Bill</th><th>Title</th><th>First Vote</th><th>Roll Calls</th><th>Last Result</th></tr></thead>
+            <tbody id="tp-body"></tbody>
+          </table></div>
+          <div class="filterbar" id="tp-pager"></div>
+        </div>
+      </div>`;
+
+    $('#tp-search').addEventListener('input', debounce(e => { this.state.tq = e.target.value.toLowerCase(); this.applyTopicFilters(); }, 200));
+    $('#tp-state').onchange = e => { this.state.tState = e.target.value; this.applyTopicFilters(); };
+    $('#tp-chamber').onchange = e => { this.state.tChamber = e.target.value; this.applyTopicFilters(); };
+    $('#tp-result').onchange = e => { this.state.tResult = e.target.value; this.applyTopicFilters(); };
+    $('#tp-floor').onchange = e => { this.state.floorOnly = e.target.checked; this.renderTopicTable(); };
+    $$('#view .src-item[data-leg]').forEach(el => el.onclick = () => {
+      this.state.activeLegislator = el.dataset.leg;
+      $$('#view .src-item[data-leg]').forEach(x => x.classList.toggle('active', x === el));
+      this.applyTopicFilters();
+    });
+    $('#tp-body').addEventListener('click', e => {
+      const btn = e.target.closest('.expand-btn[data-row]');
+      if (btn) $(`#tp-body [data-detail="${btn.dataset.row}"]`)?.classList.toggle('open');
+    });
+    this.applyTopicFilters();
+  },
+
+  applyTopicFilters() {
+    const st = this.state;
+    const [legState, legId] = (st.activeLegislator || '').split(':');
+    st.filtered = st.bills.filter(b => {
+      if (st.tState && b.state !== st.tState) return false;
+      if (st.tChamber && !(b.chambers || []).includes(st.tChamber)) return false;
+      if (st.tResult === 'pass' && !/^pass/i.test(b.last_result || '')) return false;
+      if (st.tResult === 'fail' && /^pass/i.test(b.last_result || '')) return false;
+      if (legId && !(b.state === legState && b.rollcalls.some(rc => !rc.committee && rc.votes.some(v => v.people_id === legId)))) return false;
+      if (st.tq && !((b.bill + ' ' + b.title + ' ' + b.state).toLowerCase().includes(st.tq))) return false;
+      return true;
+    });
+    st.tPage = 1;
+    this.renderTopicTable();
+  },
+
+  renderTopicTable() {
+    const st = this.state, PER = 25;
+    const start = (st.tPage - 1) * PER;
+    const rows = st.filtered.slice(start, start + PER);
+    const [, legId] = (st.activeLegislator || '').split(':');
+    const partyLine = rc => Object.entries(rc.by_party || {}).map(([p, c]) =>
+      `<span class="pill tertiary">${esc(p)}: <b style="color:var(--pine)">${c.Yes || 0}</b>–<b style="color:var(--sev-major)">${c.No || 0}</b></span>`).join(' ');
+    const voteList = (rc, which) => rc.votes.filter(v => v.vote === which).map(v =>
+      `<span class="pill ${which === 'Yes' ? '' : 'secondary'} ${v.people_id === legId ? 'kwpill' : ''}" style="${v.people_id === legId ? 'outline:2px solid var(--amber)' : ''}">${esc(v.name)} <span style="opacity:.7">${esc((v.party || '?')[0])}${v.district ? '-' + esc(String(v.district)) : ''}</span></span>`).join('');
+    $('#tp-body').innerHTML = rows.map((b, i) => {
+      const rcs = b.rollcalls.filter(rc => !st.floorOnly || !rc.committee);
+      const passed = /^pass/i.test(b.last_result || '');
+      return `
+      <tr class="${i % 2 ? 'alt' : ''}">
+        <td class="expand-btn" data-row="${i}">▸</td>
+        <td><b>${esc(b.state)}</b></td>
+        <td style="white-space:nowrap"><b>${esc(b.bill)}</b><div style="font-size:11px;color:var(--tan)">${esc(b.session)}</div></td>
+        <td>${esc(b.title)}<div style="font-size:11px;color:var(--tan)">matched: ${esc((b.phrases || []).join(', '))}</div></td>
+        <td style="white-space:nowrap">${esc(b.first_date || '')}</td>
+        <td>${b.floor_rollcalls || 0} floor${b.rollcalls.length > (b.floor_rollcalls || 0) ? ` <span style="color:var(--tan)">+${b.rollcalls.length - (b.floor_rollcalls || 0)} cmte</span>` : ''}</td>
+        <td><span class="badge ${passed ? 'yes' : 'no'}">${esc(b.last_result || '—')}</span></td>
+      </tr>
+      <tr class="detail-row" data-detail="${i}"><td colspan="7" class="detail-cell">
+        ${rcs.length ? rcs.map(rc => `
+          <div style="margin:10px 0 14px">
+            <h4 style="margin-bottom:4px">${esc(rc.date)} · ${esc(rc.chamber || '?')} · ${esc(rc.question || 'Vote')} · <span class="badge ${/^pass/i.test(rc.result || '') ? 'yes' : 'no'}">${esc(rc.result || '—')}</span>${rc.committee ? ' <span class="badge other">committee</span>' : ''}</h4>
+            <div style="font-size:12.5px;margin:4px 0">Yes <b style="color:var(--pine)">${rc.tally?.Yes || 0}</b> · No <b style="color:var(--sev-major)">${rc.tally?.No || 0}</b> · Other ${(rc.tally?.Present || 0) + (rc.tally?.['Not Voting'] || 0)} &nbsp; ${partyLine(rc)}</div>
+            <details style="margin-top:4px"><summary style="cursor:pointer;font-size:12.5px;color:var(--bark)">Show every vote (${rc.votes.length})</summary>
+              <div style="margin-top:6px"><div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--pine);margin:6px 0 3px">Yes</div>${voteList(rc, 'Yes') || '<span style="color:var(--tan)">none</span>'}
+              <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--sev-major);margin:8px 0 3px">No</div>${voteList(rc, 'No') || '<span style="color:var(--tan)">none</span>'}
+              ${rc.votes.some(v => v.vote !== 'Yes' && v.vote !== 'No') ? `<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--bark);margin:8px 0 3px">Present / Not voting</div>${rc.votes.filter(v => v.vote !== 'Yes' && v.vote !== 'No').map(v => `<span class="pill tertiary">${esc(v.name)}</span>`).join('')}` : ''}</div>
+            </details>
+          </div>`).join('') : '<p style="color:var(--bark);font-size:13px">Only committee votes recorded for this bill — untick "floor votes only" to see them.</p>'}
+      </td></tr>`;
+    }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--bark)">No bills match the current filters.</td></tr>';
+    $('#tp-count').textContent = `${st.filtered.length} of ${st.bills.length} bills`;
+    const pages = Math.ceil(st.filtered.length / PER);
+    $('#tp-pager').innerHTML = pages > 1 ? `
+      <button class="btn ghost sm" ${st.tPage === 1 ? 'disabled' : ''} onclick="Report.state.tPage--;Report.renderTopicTable()">‹ Prev</button>
+      <span class="count" style="margin:0">Page ${st.tPage} of ${pages}</span>
+      <button class="btn ghost sm" ${st.tPage === pages ? 'disabled' : ''} onclick="Report.state.tPage++;Report.renderTopicTable()">Next ›</button>` : '';
+  },
+
+  exportTopicBillsCSV() {
+    const rows = this.state.filtered.map(b => ({
+      state: b.state, session: b.session, bill: b.bill, title: b.title, matched: (b.phrases || []).join('; '),
+      first_vote: b.first_date, last_vote: b.last_date, floor_rollcalls: b.floor_rollcalls, last_result: b.last_result,
+      chambers: (b.chambers || []).join('; '),
+    }));
+    downloadFile('topic_bills.csv', toCSV(rows, ['state', 'session', 'bill', 'title', 'matched', 'first_vote', 'last_vote', 'floor_rollcalls', 'last_result', 'chambers']), 'text/csv');
+  },
+
+  exportTopicVotesCSV() {
+    const rows = [];
+    for (const b of this.state.filtered) for (const rc of b.rollcalls) {
+      if (this.state.floorOnly && rc.committee) continue;
+      for (const v of rc.votes) rows.push({
+        state: b.state, bill: b.bill, title: b.title, date: rc.date, chamber: rc.chamber, question: rc.question,
+        result: rc.result, committee: rc.committee ? 'yes' : 'no', legislator: v.name, party: v.party, district: v.district, vote: v.vote,
+      });
+    }
+    downloadFile('topic_votes.csv', toCSV(rows, ['state', 'bill', 'title', 'date', 'chamber', 'question', 'result', 'committee', 'legislator', 'party', 'district', 'vote']), 'text/csv');
+  },
+
   /* ══════════════════ NEWS LANDING PAGE ══════════════════ */
   renderNews(meta, data) {
     const articles = data.articles || [];

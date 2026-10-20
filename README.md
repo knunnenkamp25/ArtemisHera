@@ -16,6 +16,7 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 | **Upload Documents** | Any PDF/DOCX/TXT — keyword frequency analysis with tiered universe matching. |
 | **News Scrape** | Dispatches a GitHub Actions workflow that runs `scripts/news_scraper.py` against a Google Sheet site list, commits `data/news/{project}.json` back to the repo, and renders a live landing page (keyword cloud, source filters, article cards). |
 | **Scrape Web Pages** | Same pipeline, but for up to **5** manually entered URLs. |
+| **Search Votes by Topic** | Start from an issue instead of a legislator. Enter phrases ("data center", "high energy use facility"), pick states and years, and a GitHub Actions run scans every session in the state vote library, then builds the full roll call for each matching bill: every legislator's vote with party and district, floor votes separated from committee votes, a ranked list of the players, universe matches, and CSV exports. Results commit to `data/topics/{project}.json`. |
 | **Projects** | Library of every past/ongoing run — local (browser) and cloud (repo-committed) — with live status for running scrapes, plus export/import of project files. |
 | **Hera** | Select any project and generate a messaging campaign: phased channel timeline (email, social, SMS, press, ads), sample emails/tweets/texts/posts, press releases for top hits, and brand-palette ad concepts — each matched to the universes the research surfaced. |
 
@@ -26,9 +27,11 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 - `css/main.css` — Pantheon Insight brand system (March 2025 guidelines: forest/tan/gold palette, Gill Sans Nova stack)
 - `scripts/news_scraper.py` — multi-strategy scraper (WP REST → RSS → sitemap → HTML waterfall)
 - `scripts/build_federal_index.py` — builds `data/federal/members.json` from Voteview's 6 MB member CSV
+- `scripts/topic_search.py` — phrase search over the state vote library (`--phrases "a|b" --states VA,PA --from-year 2022`); committee votes are told from floor votes by sizing each roll call against the chamber roster. Offline tests: `python3 scripts/tests/test_topic_search.py`
 - `scripts/fetch_federal_votes.py` — server-side vote loader (reads `UNIVERSE_KEYWORDS` straight out of `js/data.js` so the dictionary has one home)
 - `.github/workflows/scrape.yml` — news/web scraper runner
 - `.github/workflows/federal-votes.yml` — cloud vote lookups + monthly member-index refresh
+- `.github/workflows/topic-search.yml` — topic searches over the state vote library
 - Workflows are `workflow_dispatch`, triggered from the app with a user-supplied PAT (stored in localStorage, sent only to api.github.com)
 - `data/projects.json` — manifest of cloud projects; `data/news/{id}.json` and `data/federal/{id}.json` — per-project results
 

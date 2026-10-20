@@ -1,0 +1,113 @@
+name: ArtemisHera Topic Search
+run-name: "Topic: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: 'Project ID (assigned by the app)'
+        required: true
+      project_name:
+        description: 'Human-readable project name'
+        required: true
+      phrases:
+        description: 'Pipe-separated phrases to match in bill titles and vote descriptions'
+        required: true
+      states:
+        description: 'Comma-separated state abbreviations (empty = all 50 + DC)'
+        required: false
+        default: ''
+      from_year:
+        description: 'Earliest session year to scan'
+        required: false
+        default: '2022'
+      to_year:
+        description: 'Latest session year to scan (empty = present)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run topic search
+        id: search
+        env:
+          PID: ${{ inputs.project_id }}
+          PNAME: ${{ inputs.project_name }}
+          PHRASES: ${{ inputs.phrases }}
+          STATES: ${{ inputs.states }}
+          FROM_YEAR: ${{ inputs.from_year }}
+          TO_YEAR: ${{ inputs.to_year }}
+        run: |
+          mkdir -p data/topics
+          python scripts/topic_search.py \
+            --phrases "${PHRASES}" --states "${STATES}" --from-year "${FROM_YEAR:-2022}" \
+            ${TO_YEAR:+--to-year "${TO_YEAR}"} \
+            --project-id "${PID}" --name "${PNAME}" --workers 12 \
+            --out "data/topics/${PID}.json"
+
+      # Runs even when the search failed, so the app sees "failed" rather than
+      # a project stuck on "running" forever.
+      - name: Update project manifest
+        if: always()
+        env:
+          PID: ${{ inputs.project_id }}
+          PNAME: ${{ inputs.project_name }}
+          PHRASES: ${{ inputs.phrases }}
+          OUTCOME: ${{ steps.search.outcome }}
+        run: |
+          python - <<'EOF'
+          import json, os, datetime
+          pid = os.environ['PID']; pname = os.environ['PNAME']
+          ok = os.environ.get('OUTCOME') == 'success'
+          path = 'data/projects.json'
+          try:
+              projects = json.load(open(path))
+          except Exception:
+              projects = []
+          summary = 'Run failed'
+          try:
+              m = json.load(open(f'data/topics/{pid}.json'))['meta']
+              summary = f"{m['bills']} bills · {len(m['states_hit'])} states · {m['floor_rollcalls']} floor roll calls"
+          except Exception:
+              ok = False
+          now = datetime.datetime.utcnow().isoformat() + 'Z'
+          projects = [p for p in projects if p.get('id') != pid]
+          projects.insert(0, {
+              'id': pid, 'name': pname, 'type': 'topic-search',
+              'status': 'complete' if ok else 'failed',
+              'subject': os.environ.get('PHRASES', '').replace('|', ', '),
+              'summary': summary, 'created': now, 'updated': now,
+          })
+          json.dump(projects, open(path, 'w'), indent=2)
+          print(summary)
+          EOF
+
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Topic search: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
+          for i in 1 2 3 4 5; do
+            if git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}"; then
+              exit 0
+            fi
+            echo "push attempt $i failed — retrying"
+            git rebase --abort 2>/dev/null || true
+            sleep $((i * 5))
+          done
+          exit 1

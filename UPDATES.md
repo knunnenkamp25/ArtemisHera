@@ -24,6 +24,25 @@ just unproven until a legislature is in session and something new appears.
 
 ---
 
+## Shipped 2026-10-20 — Search Votes by Topic
+
+The first issue-first entry point. A proof-of-concept scan for "data center"
+across 177 sessions (2022+) found 158 bills in 29 states, 57 of them in
+Virginia, with roll calls rising from 18 in 2022 to 331 in 2026.
+
+| Piece | What it does |
+|---|---|
+| `scripts/topic_search.py` | Phrase scan of `rollcalls.json` for the chosen states/years (12 parallel fetches), then the vote map and roster only for sessions that matched. Per bill: every roll call with tally, party split and each legislator's vote. Legislator index over floor votes. Universe matches via the shared evidence rule. |
+| Floor vs committee | Open States labels many committee votes as just "S VOTE:", so a roll call is a committee vote when fewer than half the chamber voted (roster size per role); the label is only a fallback. SB552 (VA 2026) correctly shows no floor vote — it died in committee. |
+| `topic-search.yml` | Inputs: phrases (pipe-separated), states, year range. Commits `data/topics/{id}.json`, marks the project failed on error, retries the push. |
+| App | Home card, setup page (phrases × states × years, session-count estimate), report page (bills table → roll calls → every vote; "The Players" panel filters bills by legislator; CSV exports), Hera reads topic projects (universes in play + the players as hits). |
+| Status polling | `News.refreshRunStatus` now resolves each cloud project type to its workflow; `fetchRepoPayload` maps a project type to its result file. |
+
+Not yet: federal votes (Voteview needs the cloud path and per-congress files
+are large), and curated phrase lists per topic (today you type the phrases).
+
+---
+
 ## Shipped 2026-08-07/08
 
 | Area | Outcome |
