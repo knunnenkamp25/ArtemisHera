@@ -25,11 +25,11 @@ ArtemisHera combines three proven prototypes — the Congress Votes tool, the Po
 - **No build step.** Static HTML/CSS/JS served by GitHub Pages. Repo-as-database: the Actions workflow commits scrape output JSON back to `data/`.
 - `index.html` + `js/*.js` — SPA with hash routing
 - `css/main.css` — Pantheon Insight brand system (March 2025 guidelines: forest/tan/gold palette, Gill Sans Nova stack)
-- `scripts/news_scraper.py` — multi-strategy scraper (WP REST → RSS → sitemap → HTML waterfall)
+- `scripts/news_scraper.py` — multi-strategy scraper (WP REST → RSS, including feeds the homepage advertises → news sitemap → HTML waterfall). `--workers N` scrapes sites in parallel, `--max-minutes` bounds a run and exports what it has, and every outlet ends with a status (`ok`, `no_recent`, `no_feed`, `blocked`, `rate_limited`, `unreachable`, `crashed`, `skipped`) stored under `meta.sites` in the result JSON. Offline tests: `python3 scripts/tests/test_news_scraper.py`
 - `scripts/build_federal_index.py` — builds `data/federal/members.json` from Voteview's 6 MB member CSV
 - `scripts/topic_search.py` — phrase search over the state vote library (`--phrases "a|b" --states VA,PA --from-year 2022`); committee votes are told from floor votes by sizing each roll call against the chamber roster. Offline tests: `python3 scripts/tests/test_topic_search.py`
 - `scripts/fetch_federal_votes.py` — server-side vote loader (reads `UNIVERSE_KEYWORDS` straight out of `js/data.js` so the dictionary has one home)
-- `.github/workflows/scrape.yml` — news/web scraper runner
+- `.github/workflows/scrape.yml` — news/web scraper runner (6 workers, 5-hour budget; `dry_run=true` uploads results as an artifact instead of committing)
 - `.github/workflows/federal-votes.yml` — cloud vote lookups + monthly member-index refresh
 - `.github/workflows/topic-search.yml` — topic searches over the state vote library
 - Workflows are `workflow_dispatch`, triggered from the app with a user-supplied PAT (stored in localStorage, sent only to api.github.com)

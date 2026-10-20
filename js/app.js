@@ -450,10 +450,13 @@ const App = {
       $('#ns-dmas').innerHTML = dmas.map(d => `<option value="${esc(d)}" ${keep.has(d) ? 'selected' : ''}>${esc(d)}</option>`).join('');
       const n = pool.length;
       $('#ns-run').disabled = n === 0;
-      const mins = Math.max(2, Math.round(n * 25 / 60));
+      // ~20s per outlet on the cloud runner, 6 outlets at a time; the run
+      // stops starting new outlets at 5 hours and keeps what it has.
+      const mins = Math.max(2, Math.round(n * 20 / 6 / 60));
       $('#ns-count').style.display = n ? 'block' : 'none';
       $('#ns-count').innerHTML = `<b>${n} outlets selected.</b> Estimated run: ~${mins} minutes.` +
-        (n > 200 ? ' <span style="color:var(--sev-major)">That\'s a large run — consider narrowing by DMA or type.</span>' : '');
+        (n > 900 ? ' <span style="color:var(--sev-major)">Too large for one run — outlets past the 5-hour budget are skipped. Narrow by DMA or type.</span>'
+         : n > 300 ? ' <span style="color:var(--sev-major)">That\'s a large run — consider narrowing by DMA or type.</span>' : '');
     };
 
     $('#ns-states').onchange = refresh;
@@ -1016,7 +1019,7 @@ const App = {
         <div class="glyph">⟳</div>
         <p>${fresh.status === 'failed'
           ? `Run failed. <a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener">Open the Actions log</a> to see why, then relaunch.`
-          : 'Results will appear here as soon as the workflow commits them (typically 3–25 minutes depending on the site list).'}</p>
+          : 'Results will appear here as soon as the workflow commits them (typically 2–15 minutes; outlets are scraped six at a time).'}</p>
         <p style="margin-top:12px"><a href="https://github.com/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/actions" target="_blank" rel="noopener" class="btn ghost sm">View run status on GitHub</a></p>
       </div>`;
     if (fresh.status !== 'failed') {

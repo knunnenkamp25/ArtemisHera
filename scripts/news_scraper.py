@@ -36,6 +36,7 @@ import logging
 import argparse
 import hashlib
 import traceback
+import threading
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, fields, asdict
@@ -54,6 +55,18 @@ DELAY_BETWEEN_REQUESTS = 2.0  # polite crawl delay in seconds
 MAX_ARTICLES_PER_SITE = 100   # safety cap per site
 MAX_RETRIES = 4               # max retries on rate-limit (429) responses
 INITIAL_BACKOFF = 5.0         # initial wait (seconds) after first 429
+SITE_BUDGET_SECONDS = 150.0   # soft wall-clock budget per site (checked between phases)
+DATE_MODE_PAGE_CAP = 12       # individual page fetches per site when a date filter is on
+
+try:
+    import brotli as _brotli  # noqa: F401
+    _HAS_BROTLI = True
+except ImportError:
+    try:
+        import brotlicffi as _brotli  # noqa: F401
+        _HAS_BROTLI = True
+    except ImportError:
+        _HAS_BROTLI = False
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -78,7 +91,10 @@ HEADERS_BROWSER = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    # Advertise brotli only when it can be decoded: the workflow installs the
+    # decoder, but a bare `pip install requests` would otherwise hand back
+    # undecodable bytes from every CDN that honours "br".
+    "Accept-Encoding": "gzip, deflate, br" if _HAS_BROTLI else "gzip, deflate",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -91,12 +107,27 @@ HEADERS_BROWSER = {
 # Keep HEADERS as an alias pointing to the browser set (used in a few legacy spots)
 HEADERS = HEADERS_BROWSER
 
+# Sites can be scraped on several threads at once (--workers); every log line
+# carries the site its thread is working on so interleaved output stays legible.
+_site_ctx = threading.local()
+
+
+class _SiteFilter(logging.Filter):
+    def filter(self, record):
+        site = getattr(_site_ctx, "site", None)
+        record.site = f"[{site}] " if site else ""
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    format="%(asctime)s  %(levelname)-8s  %(site)s%(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("news_scraper")
+logging.getLogger().addFilter(_SiteFilter())
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_SiteFilter())
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -134,6 +165,12 @@ class PageFetcher:
 
     def __init__(self, use_selenium: bool = False):
         self.driver = None
+        # Per-site tallies used for the outlet diagnostics (reset by begin_site)
+        self.site_stats: dict = {}
+        # bad host -> working host, learned from SSL hostname mismatches
+        # (www.abc7ny.com serves a cert for abc7ny.com only)
+        self.host_rewrites: dict[str, str] = {}
+        self.begin_site()
         # Plain session for discovery (homepage, RSS, sitemap) — minimal headers
         # so servers return server-side-rendered HTML rather than a JS-only shell
         self.discovery_session = requests.Session()
@@ -169,6 +206,57 @@ class PageFetcher:
         """Backwards-compatible alias — returns the article session."""
         return self.article_session
 
+    def begin_site(self):
+        """Reset the per-site tallies that feed the outlet diagnostics."""
+        self.site_stats = {"ok": 0, "blocked": 0, "rate_limited": 0, "errors": 0,
+                           "challenge_fallback": 0, "last_error": ""}
+
+    def _note(self, status_code: Optional[int] = None, error: Optional[str] = None):
+        st = self.site_stats
+        if error is not None:
+            st["errors"] += 1
+            st["last_error"] = str(error)[:200]
+        elif status_code is not None:
+            if status_code == 200:
+                st["ok"] += 1
+            elif status_code in (401, 403, 406, 503):
+                st["blocked"] += 1
+            elif status_code == 429:
+                st["rate_limited"] += 1
+
+    def rewrite(self, url: str) -> str:
+        """Apply any host rewrite learned earlier for this site."""
+        parts = urlparse(url)
+        good = self.host_rewrites.get(parts.netloc)
+        return parts._replace(netloc=good).geturl() if good else url
+
+    @staticmethod
+    def _alt_host(url: str) -> str:
+        parts = urlparse(url)
+        host = parts.netloc
+        alt = host[4:] if host.lower().startswith("www.") else "www." + host
+        return parts._replace(netloc=alt).geturl()
+
+    def _get(self, session, url: str, **kw):
+        """session.get with the SSL-hostname-mismatch recovery.
+
+        A surprising number of outlet URLs in the inventory carry a 'www.'
+        the site's certificate doesn't cover (or vice versa). One retry on
+        the other form, remembered for the rest of the site, rescues them.
+        """
+        url = self.rewrite(url)
+        try:
+            return session.get(url, **kw)
+        except requests.exceptions.SSLError as e:
+            msg = str(e).lower()
+            if "hostname mismatch" in msg or "doesn't match" in msg or "certificate is not valid for" in msg:
+                alt = self._alt_host(url)
+                log.info(f"  SSL hostname mismatch on {urlparse(url).netloc} — retrying as {urlparse(alt).netloc}")
+                resp = session.get(alt, **kw)
+                self.host_rewrites[urlparse(url).netloc] = urlparse(alt).netloc
+                return resp
+            raise
+
     def _init_selenium(self):
         try:
             from selenium import webdriver
@@ -192,23 +280,41 @@ class PageFetcher:
         except Exception as e:
             log.warning(f"Could not start Selenium driver: {e}")
 
-    def warm_up(self, site_url: str):
+    def warm_up(self, site_url: str) -> Optional[str]:
         """Visit the homepage to acquire cookies on both sessions.
 
         Many anti-bot systems expect a browser to have visited the root domain
-        before navigating to individual pages.
+        before navigating to individual pages. Returns the homepage HTML (or
+        None) so callers can autodiscover feeds and article links from it
+        instead of fetching it a second time.
         """
         try:
             log.info(f"  Warming up sessions on {site_url}...")
-            resp = self.discovery_session.get(site_url, timeout=REQUEST_TIMEOUT)
+            resp = self._get(self.discovery_session, site_url, timeout=REQUEST_TIMEOUT)
+            self._note(resp.status_code)
+            if resp.status_code in (401, 403, 406, 503):
+                # WAF answered the plain client. The browser-profile session
+                # (cloudscraper) gets through on many of these.
+                log.info(f"  Homepage returned {resp.status_code} to the plain client — retrying with browser profile")
+                resp = self._get(self.article_session, site_url, timeout=REQUEST_TIMEOUT)
+                self._note(resp.status_code)
+                if resp.status_code == 200:
+                    self.site_stats["challenge_fallback"] += 1
             n_cookies = len(resp.cookies)
             # Share cookies with the article session too
             self.article_session.cookies.update(self.discovery_session.cookies)
             if resp.status_code == 200:
                 log.info(f"  Sessions warmed up ({n_cookies} cookies set)")
+                html = resp.text
+            else:
+                log.info(f"  Homepage returned HTTP {resp.status_code}")
+                html = None
             time.sleep(1.5)
+            return html
         except Exception as e:
+            self._note(error=e)
             log.warning(f"  Warm-up request failed: {e}")
+            return None
 
     def fetch(
         self,
@@ -246,7 +352,17 @@ class PageFetcher:
         backoff = INITIAL_BACKOFF
         for attempt in range(1, retries + 2):  # +2: attempt 1 is always made
             try:
-                resp = session.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
+                resp = self._get(session, url, timeout=REQUEST_TIMEOUT, headers=headers)
+                self._note(resp.status_code)
+
+                if resp.status_code in (401, 403, 406, 503) and use_discovery_session:
+                    # The plain discovery client was refused (Cloudflare, Akamai,
+                    # Incapsula...). One retry through the browser-profile session
+                    # before giving up — it clears a large share of these.
+                    resp = self._get(self.article_session, url, timeout=REQUEST_TIMEOUT, headers=headers)
+                    self._note(resp.status_code)
+                    if resp.status_code == 200:
+                        self.site_stats["challenge_fallback"] += 1
 
                 if resp.status_code == 429:
                     # Use Retry-After header if provided, otherwise backoff
@@ -279,7 +395,10 @@ class PageFetcher:
 
             except requests.RequestException as e:
                 if "429" not in str(e):
-                    log.warning(f"requests failed for {url}: {e}")
+                    self._note(error=e)
+                    # Fail-fast probes (feed/sitemap path guessing) expect most
+                    # attempts to miss; keep them out of the WARNING stream.
+                    (log.debug if retries == 0 else log.warning)(f"requests failed for {url}: {e}")
                     break  # non-429 error, don't retry — try Selenium
                 if attempt <= retries:
                     log.warning(
@@ -312,13 +431,64 @@ class PageFetcher:
 # RSS / Sitemap link discovery (preferred — machine-readable, no bot detection)
 # ---------------------------------------------------------------------------
 
-# Common RSS feed paths to probe
-RSS_PATHS = ["/feed/", "/rss/", "/rss.xml", "/feed.xml", "/feeds/posts/default",
-             "/atom.xml", "/news/feed/", "/feed/rss/"]
+# Common RSS feed paths to probe, roughly in order of how often they hit across
+# the outlet inventory. WordPress first, then the platforms most local
+# outlets actually run on: TownNews/BLOX (weeklies), Arc (Gray, Lee, WaPo),
+# TEGNA, Hearst, Nexstar, Gannett/Presto.
+RSS_PATHS = [
+    "/feed/", "/rss/", "/rss.xml", "/feed.xml", "/feeds/posts/default",
+    "/atom.xml", "/news/feed/", "/feed/rss/", "/feed", "/?feed=rss2",
+    "/search/?f=rss&t=article&l=50&s=start_time&sd=desc",   # TownNews / BLOX
+    "/arc/outboundfeeds/rss/?outputType=xml",                # Arc XP
+    "/arc/outboundfeeds/rss/",
+    "/feeds/syndication/rss/news",                           # TEGNA
+    "/feeds/rss/news.xml", "/rss/news", "/news/rss", "/index.rss",
+    "/category/news/feed/", "/stories.rss", "/news.rss",
+]
 
-# Common sitemap paths to probe
-SITEMAP_PATHS = ["/sitemap_index.xml", "/sitemap.xml", "/wp-sitemap.xml",
-                 "/news-sitemap.xml", "/sitemap_news.xml", "/post-sitemap.xml"]
+# Common sitemap paths to probe — news sitemaps first: they are small and
+# list exactly the last two days of stories, which is what a dated run wants.
+SITEMAP_PATHS = ["/news-sitemap.xml", "/sitemap_news.xml", "/sitemap-news.xml",
+                 "/arc/outboundfeeds/news-sitemap/?outputType=xml",
+                 "/sitemap_index.xml", "/sitemap.xml", "/wp-sitemap.xml",
+                 "/post-sitemap.xml"]
+
+_FEED_HREF_RE = re.compile(
+    r"(/feed/?$|/rss/?$|\.rss$|/rss\.xml$|/feed\.xml$|/atom\.xml$|[?&]f=rss|format=rss|outputType=xml)",
+    re.IGNORECASE,
+)
+
+
+def discover_feed_urls_from_html(html: str, base_url: str) -> list[str]:
+    """Feed URLs advertised by a homepage.
+
+    <link rel="alternate" type="application/rss+xml"> is the standard every
+    CMS emits, and it is what finally reaches the outlets whose feeds live at
+    paths no probe list would guess (Hearst's /rss/feed/<section>-<id>.php,
+    Gannett's rssfeeds.<site>.com, Arc's /arc/outboundfeeds/...). Anchors that
+    plainly point at a feed are picked up too — Hearst/BLOX "RSS" index pages
+    link their section feeds that way.
+    """
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    found: list[str] = []
+    for link in soup.find_all("link", href=True):
+        rel = " ".join(link.get("rel") or []).lower()
+        typ = (link.get("type") or "").lower()
+        if "alternate" in rel and ("rss" in typ or "atom" in typ or "xml" in typ):
+            found.append(urljoin(base_url, link["href"].strip()))
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if _FEED_HREF_RE.search(href.split("#")[0]):
+            found.append(urljoin(base_url, href))
+    out = []
+    for u in found:
+        low = u.lower()
+        if "comment" in low or low.startswith("javascript:"):
+            continue
+        out.append(u)
+    return list(dict.fromkeys(out))[:8]
 
 
 def _parse_rss_feed(xml_text: str, site_domain: str) -> tuple[list[str], list["Article"]]:
@@ -439,7 +609,14 @@ def _parse_rss_feed(xml_text: str, site_domain: str) -> tuple[list[str], list["A
     return list(dict.fromkeys(links)), articles
 
 
-def discover_links_from_rss(fetcher: "PageFetcher", site_url: str) -> list[str]:
+def _feed_candidates(site_url: str, extra_feeds: Optional[list] = None) -> list[str]:
+    base = site_url.rstrip("/")
+    cands = list(extra_feeds or []) + [base + p for p in RSS_PATHS]
+    return list(dict.fromkeys(cands))
+
+
+def discover_links_from_rss(fetcher: "PageFetcher", site_url: str,
+                            extra_feeds: Optional[list] = None) -> list[str]:
     """Try to find article links via an RSS/Atom feed.
 
     Uses fail-fast mode (no retries per path) so the probe moves on quickly
@@ -447,8 +624,8 @@ def discover_links_from_rss(fetcher: "PageFetcher", site_url: str) -> list[str]:
     """
     base = site_url.rstrip("/")
     domain = urlparse(site_url).netloc
-    for path in RSS_PATHS:
-        url = base + path
+    for url in _feed_candidates(site_url, extra_feeds):
+        path = url[len(base):] if url.startswith(base) else url
         try:
             xml_text = fetcher.fetch(url, use_discovery_session=True, max_retries=0)
             if not xml_text:
@@ -508,14 +685,19 @@ def scrape_articles_from_wp_api(
     # Retries with backoff if the site is temporarily rate-limiting.
     probe_url = f"{api_base}?per_page=1"
     header_resp = None
-    probe_backoff = 15.0
-    for probe_attempt in range(1, 4):  # up to 3 probe attempts
+    probe_backoff = 10.0
+    # Two attempts, not three: a site that 429s the probe twice still has an
+    # RSS feed to fall back to, and the old 15+30+60s chain cost 105s per site
+    # before that fallback even started.
+    for probe_attempt in range(1, 3):
         try:
-            header_resp = fetcher.discovery_session.get(probe_url, timeout=REQUEST_TIMEOUT)
+            header_resp = fetcher._get(fetcher.discovery_session, probe_url, timeout=REQUEST_TIMEOUT)
+            fetcher._note(header_resp.status_code)
         except Exception as e:
+            fetcher._note(error=e)
             log.info(f"  WP API probe failed — skipping ({e})")
             return []
-        log.info(f"  WP API probe status: {header_resp.status_code} (attempt {probe_attempt}/3)")
+        log.info(f"  WP API probe status: {header_resp.status_code} (attempt {probe_attempt}/2)")
         if header_resp.status_code == 429:
             wait = _retry_after_seconds(header_resp, probe_backoff)
             log.info(f"  WP API probe 429 — waiting {wait:.0f}s before retry...")
@@ -815,7 +997,8 @@ def fetch_post_by_wp_slug(
 
 
 def scrape_articles_from_rss(
-    fetcher: "PageFetcher", site_url: str, site_domain: str
+    fetcher: "PageFetcher", site_url: str, site_domain: str,
+    extra_feeds: Optional[list] = None,
 ) -> list["Article"]:
     """Extract full article data directly from an RSS/Atom feed, with pagination.
 
@@ -830,8 +1013,8 @@ def scrape_articles_from_rss(
     Returns an empty list if no feed is found or the feed lacks body content.
     """
     base = site_url.rstrip("/")
-    for path in RSS_PATHS:
-        feed_base_url = base + path
+    for feed_base_url in _feed_candidates(site_url, extra_feeds):
+        path = feed_base_url[len(base):] if feed_base_url.startswith(base) else feed_base_url
         try:
             # Page 1 — always fetch without ?paged= so it works on non-WordPress too
             xml_text = fetcher.fetch(feed_base_url, use_discovery_session=True, max_retries=0)
@@ -1604,16 +1787,65 @@ def _append_to_xlsx(articles: list[Article], output_path: str):
 # Main scraping orchestrator
 # ---------------------------------------------------------------------------
 
+def _finish_site(diag: dict, started: float, articles: list, fetcher: "PageFetcher",
+                 status: Optional[str] = None) -> list:
+    """Fill in the outlet diagnostic and return the articles unchanged."""
+    st = fetcher.site_stats
+    diag["seconds"] = round(time.monotonic() - started, 1)
+    diag["kept"] = len(articles)
+    diag["challenge_fallback"] = st.get("challenge_fallback", 0)
+    if status:
+        diag["status"] = status
+    elif articles:
+        diag["status"] = "ok"
+    elif diag.get("found", 0) > 0:
+        diag["status"] = "no_recent"
+    elif st.get("ok", 0) == 0 and st.get("blocked", 0) > 0:
+        diag["status"] = "blocked"
+    elif st.get("ok", 0) == 0 and st.get("rate_limited", 0) > 0:
+        diag["status"] = "rate_limited"
+    elif st.get("ok", 0) == 0 and st.get("errors", 0) > 0:
+        diag["status"] = "unreachable"
+        diag["note"] = diag.get("note") or st.get("last_error", "")
+    else:
+        diag["status"] = "no_feed"
+    return articles
+
+
 def scrape_site(
     fetcher: PageFetcher,
     site_url: str,
     debug_html_path: Optional[str] = None,
     debug_article_path: Optional[str] = None,
     target_dates: Optional[set] = None,
+    diag: Optional[dict] = None,
 ) -> list[Article]:
-    """Scrape all discoverable articles from a single news site."""
+    """Scrape all discoverable articles from a single news site.
+
+    Method waterfall: WordPress REST API -> RSS/Atom (feeds advertised by the
+    homepage, then guessed paths) -> news sitemap -> homepage links, each
+    later stage fetching individual pages. Every stage runs in dated
+    (--today) mode too, capped by DATE_MODE_PAGE_CAP page fetches, because
+    most outlets that aren't WordPress have no feed at a guessable path and
+    used to yield nothing at all.
+
+    `diag`, when given, is filled with the outlet diagnostic (status, method,
+    counts, timing) that the run summary and the dashboard JSON report.
+    """
+    diag = diag if diag is not None else {}
+    started = time.monotonic()
+    fetcher.begin_site()
     log.info(f"Scraping: {site_url}")
     site_domain = urlparse(site_url).netloc
+    diag.update({"url": site_url, "domain": site_domain, "method": None,
+                 "found": 0, "kept": 0, "status": "no_articles", "note": ""})
+
+    def over_budget(phase: str) -> bool:
+        if time.monotonic() - started > SITE_BUDGET_SECONDS:
+            log.info(f"  Site budget ({SITE_BUDGET_SECONDS:.0f}s) exhausted before {phase} — moving on")
+            diag["note"] = f"site time budget hit before {phase}"
+            return True
+        return False
 
     # ── Step 0a: Try WordPress REST API (BEFORE warm_up) ─────────────────────
     # The warm_up homepage request counts against the same rate-limit budget as
@@ -1622,28 +1854,51 @@ def scrape_site(
     # gives it the best chance of succeeding.
     log.info(f"  Trying WordPress REST API...")
     bulk_articles = scrape_articles_from_wp_api(fetcher, site_url, site_domain)
+    if bulk_articles:
+        diag["method"] = "wp_api"
 
     # Warm up sessions now (acquires cookies for per-page fetching fallbacks)
-    fetcher.warm_up(site_url)
+    # and keep the homepage: it advertises the site's feeds and links its
+    # latest stories, both of which the later stages use.
+    homepage_html = fetcher.warm_up(site_url)
+    if fetcher.host_rewrites.get(site_domain):
+        site_url = fetcher.rewrite(site_url)
+        site_domain = urlparse(site_url).netloc
+        diag["note"] = f"host corrected to {site_domain}"
+    advertised_feeds = discover_feed_urls_from_html(homepage_html, site_url) if homepage_html else []
+    if advertised_feeds:
+        log.info(f"  Homepage advertises {len(advertised_feeds)} feed(s): {advertised_feeds[0]}"
+                 + (" …" if len(advertised_feeds) > 1 else ""))
 
     # ── Step 0b: Fall back to RSS feed (with pagination) ─────────────────────
     # Works for WordPress and non-WordPress sites. Pagination via ?paged=N may
     # be unreliable on cached setups, but RSS content is complete per item.
-    if not bulk_articles:
+    if not bulk_articles and not over_budget("RSS"):
         log.info(f"  Trying full-article RSS extraction...")
-        bulk_articles = scrape_articles_from_rss(fetcher, site_url, site_domain)
+        bulk_articles = scrape_articles_from_rss(fetcher, site_url, site_domain, extra_feeds=advertised_feeds)
+        if bulk_articles:
+            diag["method"] = "rss"
+        else:
+            log.info(f"  No usable feed among {len(_feed_candidates(site_url, advertised_feeds))} candidates")
+
+    diag["found"] = len(bulk_articles)
 
     # Apply date filter if requested (--today / --date)
     if target_dates and bulk_articles:
         before = len(bulk_articles)
+        # Feed items without a parseable date are the feed's newest entries by
+        # construction; dropping them silently hid whole outlets.
+        undated = [a for a in bulk_articles if not a.date_published]
         bulk_articles = [
             a for a in bulk_articles
             if a.date_published and a.date_published[:10] in target_dates
-        ]
+        ] + undated[:10]
         label = ", ".join(sorted(target_dates))
-        log.info(f"  Date filter ({label}): kept {len(bulk_articles)}/{before} articles")
+        log.info(f"  Date filter ({label}): kept {len(bulk_articles)}/{before} articles"
+                 + (f" ({len(undated[:10])} undated kept)" if undated else ""))
         if not bulk_articles:
             log.info(f"  No articles found for {label} via bulk methods.")
+            diag["note"] = "feed reachable but nothing in the date window"
 
     # Deduplicate whatever bulk methods returned
     bulk_deduped: list[Article] = []
@@ -1658,15 +1913,19 @@ def scrape_site(
     if bulk_deduped:
         log.info(f"  Bulk methods collected {len(bulk_deduped)} articles")
 
-    # In date-filter mode, the RSS feed already covers the day's articles fully
-    # (they're always in the most-recent 10).  Return immediately — no need to
-    # fight rate limiters for historical bulk pagination.
-    if target_dates:
-        return bulk_deduped
+    # In date-filter mode a feed that answered is the whole story: it always
+    # carries the day's articles, so there is nothing to gain from fighting
+    # rate limiters for historical pagination. A feed that answered with
+    # nothing in the window is likewise final — the site is simply quiet.
+    if target_dates and diag["found"] > 0:
+        return _finish_site(diag, started, bulk_deduped, fetcher)
 
     # If bulk methods gave us everything we need, return now
     if len(bulk_deduped) >= MAX_ARTICLES_PER_SITE:
-        return bulk_deduped
+        return _finish_site(diag, started, bulk_deduped, fetcher)
+
+    if over_budget("link discovery"):
+        return _finish_site(diag, started, bulk_deduped, fetcher)
 
     # Bulk methods either gave nothing, or only partial results (e.g. WP API
     # was rate-limited after page 1).  Either way, supplement by discovering
@@ -1681,22 +1940,28 @@ def scrape_site(
 
     # ── Link discovery: try in order of reliability ──────────────────────────
     # 1. RSS feed (designed for machines, no bot detection, most reliable)
+    discovery_method = None
     log.info(f"  Trying RSS feed discovery...")
-    article_urls = discover_links_from_rss(fetcher, site_url)
+    article_urls = discover_links_from_rss(fetcher, site_url, extra_feeds=advertised_feeds)
+    if article_urls:
+        discovery_method = "rss_links"
 
     # 2. Sitemap XML (also machine-readable, good coverage of all articles)
-    if not article_urls:
+    if not article_urls and not over_budget("sitemap discovery"):
         log.info(f"  Trying sitemap discovery...")
         article_urls = discover_links_from_sitemap(fetcher, site_url)
+        if article_urls:
+            discovery_method = "sitemap"
 
-    # 3. HTML scraping — uses MINIMAL headers (discovery session) so the server
-    #    returns server-side-rendered HTML rather than a JS-only shell
-    if not article_urls:
+    # 3. HTML scraping — the homepage we already hold, fetched with MINIMAL
+    #    headers so the server returned server-side-rendered HTML rather than
+    #    a JS-only shell
+    if not article_urls and not over_budget("homepage link scraping"):
         log.info(f"  Falling back to HTML link scraping...")
-        html = fetcher.fetch(site_url, use_discovery_session=True)
+        html = homepage_html or fetcher.fetch(site_url, use_discovery_session=True)
         if not html:
             log.error(f"Could not fetch {site_url}")
-            return []
+            return _finish_site(diag, started, bulk_deduped, fetcher)
 
         # Debug: save raw HTML so user can inspect what the server returned
         if debug_html_path:
@@ -1712,15 +1977,19 @@ def scrape_site(
             # Try common section pages
             section_paths = ["/news", "/local", "/local-news", "/latest", "/stories"]
             for path in section_paths:
+                if over_budget("section pages"):
+                    break
                 section_url = urljoin(site_url, path)
                 section_html = fetcher.fetch(section_url, referer=site_url,
-                                             use_discovery_session=True)
+                                             use_discovery_session=True, max_retries=0)
                 if section_html:
                     extra = discover_article_links(section_html, site_url)
                     article_urls.extend(extra)
                     time.sleep(DELAY_BETWEEN_REQUESTS)
             article_urls = list(dict.fromkeys(article_urls))
             log.info(f"  After checking sections: {len(article_urls)} candidate links")
+        if article_urls:
+            discovery_method = "html_links"
 
     # Remove URLs already covered by bulk methods (WP API / RSS)
     article_urls = [u for u in article_urls if u not in already_fetched_urls]
@@ -1728,12 +1997,16 @@ def scrape_site(
         f"  Total article links discovered: {len(article_urls)} "
         f"(excluding {len(already_fetched_urls)} already collected)"
     )
+    diag["found"] = max(diag["found"], len(article_urls) + len(bulk_deduped))
 
-    # Cap: only fetch as many as we still need
+    # Cap: only fetch as many as we still need. In dated mode the cap is
+    # tighter — a handful of the newest pages tells us whether the outlet has
+    # anything in the window, and a 300-outlet run can't afford more.
     remaining_slots = MAX_ARTICLES_PER_SITE - len(bulk_deduped)
+    if target_dates:
+        remaining_slots = min(remaining_slots, DATE_MODE_PAGE_CAP)
     article_urls = article_urls[:remaining_slots]
 
-    # Detect whether the WP REST API is available for this site.
     # Detect whether the WP REST API is available for this site.
     # We know it's available if the bulk WP API call returned anything,
     # or if we can confirm with a lightweight probe.
@@ -1743,11 +2016,12 @@ def scrape_site(
     # Cheaper check: just try a quick probe if we're about to fetch individual pages
     if not wp_api_available and article_urls:
         try:
-            _probe = fetcher.discovery_session.get(
+            _probe = fetcher._get(
+                fetcher.discovery_session,
                 f"{site_url.rstrip('/')}/wp-json/wp/v2/posts?per_page=1",
                 timeout=5,
             )
-            wp_api_available = _probe.status_code == 200
+            wp_api_available = _probe.status_code == 200 and _probe.text.lstrip().startswith("[")
             if wp_api_available:
                 log.info(f"  WP API available — will fetch remaining articles by slug")
         except Exception:
@@ -1764,8 +2038,11 @@ def scrape_site(
     current_delay = DELAY_BETWEEN_REQUESTS  # adaptive delay
     last_successful_url = site_url  # track last page visited for Referer chain
     debug_article_saved = False  # only save the first one
+    fetched_pages = 0
 
     for i, article_url in enumerate(article_urls, 1):
+        if over_budget(f"page fetch {i}/{len(article_urls)}"):
+            break
         log.info(f"  [{i}/{len(article_urls)}] Fetching: {article_url}")
         time.sleep(current_delay)
 
@@ -1783,12 +2060,14 @@ def scrape_site(
 
         # ── Strategy B: HTML fetch + extraction ───────────────────────────────
         if not article:
-            article_html = fetcher.fetch(article_url, referer=last_successful_url)
+            article_html = fetcher.fetch(article_url, referer=last_successful_url,
+                                         max_retries=1 if target_dates else None)
             if not article_html:
                 current_delay = min(current_delay * 1.5, 30)
                 log.info(f"    Increased delay to {current_delay:.1f}s after failure")
                 continue
 
+            fetched_pages += 1
             last_successful_url = article_url
 
             if debug_article_path and not debug_article_saved:
@@ -1803,6 +2082,9 @@ def scrape_site(
             article = extract_article(article_html, article_url, site_domain, debug=True)
 
         if article:
+            if target_dates and article.date_published and article.date_published[:10] not in target_dates:
+                log.info(f"    ⊘ Outside date window ({article.date_published}): {article.title[:60]}")
+                continue
             # Deduplicate by title
             title_hash = hashlib.md5(article.title.lower().encode()).hexdigest()
             if title_hash not in seen_titles:
@@ -1820,7 +2102,12 @@ def scrape_site(
             f"{len(articles) - len(bulk_deduped)} from individual fetches "
             f"= {len(articles)} total"
         )
-    return articles
+    if len(articles) > len(bulk_deduped):
+        diag["method"] = (diag["method"] + "+" if diag["method"] else "") + (discovery_method or "pages")
+    elif article_urls and not diag.get("note"):
+        diag["note"] = f"{fetched_pages} page(s) fetched, none extractable in window"
+    return _finish_site(diag, started, articles, fetcher)
+
 
 # ---------------------------------------------------------------------------
 # Google Sheets integration
@@ -2130,6 +2417,23 @@ Examples:
              f"(default: {MAX_RETRIES})",
     )
     parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Scrape this many sites at once (default: 1). Each worker talks to a "
+             "different host, so per-site politeness delays are unaffected. 6 is "
+             "a good cloud setting.",
+    )
+    parser.add_argument(
+        "--max-minutes", type=float, default=0,
+        help="Stop starting new sites after this many minutes and export what "
+             "was collected (default: no limit). Keeps a large run inside the "
+             "CI job timeout instead of losing everything to it.",
+    )
+    parser.add_argument(
+        "--site-budget", type=float, default=SITE_BUDGET_SECONDS,
+        help=f"Soft per-site time budget in seconds (default: {SITE_BUDGET_SECONDS:.0f}). "
+             "Checked between phases; a site over budget skips its remaining phases.",
+    )
+    parser.add_argument(
         "--debug-html", metavar="FILE", default=None,
         help="Save the raw homepage HTML to FILE for inspection. "
              "Useful for diagnosing why link discovery finds 0 articles "
@@ -2433,7 +2737,8 @@ def _match_keyword_to_universe(word: str, universes: list) -> tuple:
 # JSON export  (dashboard data file)
 # ---------------------------------------------------------------------------
 
-def _build_dashboard_json(articles: list[Article], universes: list) -> dict:
+def _build_dashboard_json(articles: list[Article], universes: list,
+                          run_meta: Optional[dict] = None) -> dict:
     """
     Build the JSON payload consumed by the GitHub Pages dashboard.
 
@@ -2481,11 +2786,14 @@ def _build_dashboard_json(articles: list[Article], universes: list) -> dict:
             "source_site":    a.source_site,
         })
 
+    meta = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "total":        len(articles),
+    }
+    if run_meta:
+        meta.update(run_meta)
     return {
-        "meta": {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "total":        len(articles),
-        },
+        "meta": meta,
         "articles": articles_out,
         "keywords": keywords_out,
         "sources":  sources,
@@ -2498,6 +2806,7 @@ def export_dashboard_json(
     json_path: str,
     universes_sheet: Optional[str] = None,
     append_mode: bool = False,
+    run_meta: Optional[dict] = None,
 ):
     """
     Write (or merge into) the dashboard JSON file.
@@ -2536,7 +2845,7 @@ def export_dashboard_json(
         except Exception as e:
             log.warning(f"Could not read existing JSON for merge ({e}); overwriting.")
 
-    payload = _build_dashboard_json(articles, universes)
+    payload = _build_dashboard_json(articles, universes, run_meta)
 
     os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
     import json as _json
@@ -2582,13 +2891,167 @@ def git_push_dashboard(json_path: str):
     print("  ✓ Dashboard data pushed to GitHub")
 
 
+STATUS_LABELS = {
+    "ok":           "articles collected",
+    "no_recent":    "reachable, nothing in the date window",
+    "no_feed":      "reachable, no feed / API / recognisable article links",
+    "no_articles":  "reachable, nothing extractable",
+    "blocked":      "refused the runner (403/406/503 — WAF or bot block)",
+    "rate_limited": "rate-limited (429) on every request",
+    "unreachable":  "DNS / TLS / connection failure",
+    "crashed":      "scraper error (see log)",
+    "skipped":      "not attempted — run time budget exhausted",
+}
+
+
+def run_sites(
+    urls: list[str],
+    workers: int = 1,
+    max_minutes: float = 0,
+    use_selenium: bool = False,
+    debug_html_path: Optional[str] = None,
+    debug_article_path: Optional[str] = None,
+    target_dates: Optional[set] = None,
+) -> tuple[list[Article], list[dict]]:
+    """Scrape every site, optionally several at once, inside a run budget.
+
+    Returns (articles in input order, one diagnostic dict per site). One site
+    must never take down the run: on GitHub-runner IPs the big CDNs throw
+    connection resets and challenge pages that a residential connection never
+    sees, and a multi-hundred-site scrape losing everything to one of them is
+    worse than losing that one site. Each worker thread owns its own
+    PageFetcher (sessions are not thread-safe).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = max(1, int(workers or 1))
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes and max_minutes > 0 else None
+    local = threading.local()
+    fetchers: list[PageFetcher] = []
+    lock = threading.Lock()
+
+    def get_fetcher() -> PageFetcher:
+        f = getattr(local, "fetcher", None)
+        if f is None:
+            f = PageFetcher(use_selenium=use_selenium)
+            local.fetcher = f
+            with lock:
+                fetchers.append(f)
+        return f
+
+    def work(item):
+        idx, site_url = item
+        diag = {"url": site_url, "domain": urlparse(site_url).netloc, "method": None,
+                "found": 0, "kept": 0, "seconds": 0.0, "note": ""}
+        if deadline and time.monotonic() > deadline:
+            diag["status"] = "skipped"
+            return idx, [], diag
+        _site_ctx.site = diag["domain"]
+        try:
+            articles = scrape_site(
+                get_fetcher(), site_url,
+                debug_html_path=debug_html_path,
+                debug_article_path=debug_article_path,
+                target_dates=target_dates,
+                diag=diag,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            log.error(f"  SITE FAILED (continuing): {site_url}\n{traceback.format_exc()}")
+            diag.update(status="crashed", kept=0, note=f"{type(e).__name__}: {str(e)[:160]}")
+            articles = []
+        finally:
+            _site_ctx.site = None
+        log.info(f"  Collected {len(articles)} articles from {site_url} [{diag.get('status')}]\n")
+        return idx, articles, diag
+
+    results: list = [None] * len(urls)
+    reports: list = [None] * len(urls)
+    try:
+        if workers == 1:
+            for item in enumerate(urls):
+                idx, arts, diag = work(item)
+                results[idx], reports[idx] = arts, diag
+        else:
+            log.info(f"Scraping with {workers} parallel workers")
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="site") as pool:
+                for idx, arts, diag in pool.map(work, enumerate(urls)):
+                    results[idx], reports[idx] = arts, diag
+    finally:
+        for f in fetchers:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+    all_articles: list[Article] = []
+    for arts in results:
+        all_articles.extend(arts or [])
+    return all_articles, reports
+
+
+def summarize_run(reports: list[dict], elapsed_seconds: float, args=None) -> dict:
+    """Print the outlet table, mirror it to the GitHub job summary, and return
+    the run metadata that goes into the dashboard JSON's meta block."""
+    from collections import Counter
+    counts = Counter(r.get("status", "?") for r in reports)
+    produced = counts.get("ok", 0)
+    print(f"\n{'='*72}")
+    print(f"  Outlet coverage: {produced}/{len(reports)} produced articles "
+          f"in {elapsed_seconds/60:.1f} min")
+    for status, n in counts.most_common():
+        print(f"    {n:4d}  {status:<13} {STATUS_LABELS.get(status, '')}")
+    print(f"{'='*72}")
+    print(f"  {'status':<13}{'kept':>5}{'found':>6}{'secs':>7}  method        outlet")
+    for r in sorted(reports, key=lambda r: (r.get('status') != 'ok', -r.get('kept', 0))):
+        note = f"  — {r['note']}" if r.get("note") else ""
+        print(f"  {r.get('status','?'):<13}{r.get('kept',0):>5}{r.get('found',0):>6}"
+              f"{r.get('seconds',0):>7.0f}  {(r.get('method') or '-'):<13} {r.get('domain','')}{note}")
+    print()
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(f"## Outlet coverage: {produced}/{len(reports)} produced articles "
+                        f"({elapsed_seconds/60:.1f} min)\n\n")
+                f.write("| Status | Outlets | Meaning |\n|---|---:|---|\n")
+                for status, n in counts.most_common():
+                    f.write(f"| `{status}` | {n} | {STATUS_LABELS.get(status, '')} |\n")
+                f.write("\n<details><summary>Per-outlet detail</summary>\n\n")
+                f.write("| Outlet | Status | Kept | Method | Secs | Note |\n|---|---|---:|---|---:|---|\n")
+                for r in sorted(reports, key=lambda r: (r.get('status') != 'ok', -r.get('kept', 0))):
+                    f.write(f"| {r.get('domain','')} | {r.get('status','?')} | {r.get('kept',0)} | "
+                            f"{r.get('method') or '-'} | {r.get('seconds',0):.0f} | {r.get('note','')} |\n")
+                f.write("\n</details>\n")
+        except Exception as e:
+            log.debug(f"Could not write job summary: {e}")
+
+    return {
+        "run": {
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "workers": getattr(args, "workers", 1) if args else 1,
+            "days": getattr(args, "days", None) if (args and getattr(args, "today", False)) else None,
+            "max_articles": getattr(args, "max_articles", None) if args else None,
+            "budget_hit": counts.get("skipped", 0) > 0,
+        },
+        "outlets": {"tried": len(reports), "produced": produced, "by_status": dict(counts)},
+        "sites": [
+            {k: r.get(k) for k in ("url", "domain", "status", "method", "found", "kept", "seconds", "note")}
+            for r in reports
+        ],
+    }
+
+
 def main():
     args = parse_args()
 
-    global MAX_ARTICLES_PER_SITE, DELAY_BETWEEN_REQUESTS, MAX_RETRIES
+    global MAX_ARTICLES_PER_SITE, DELAY_BETWEEN_REQUESTS, MAX_RETRIES, SITE_BUDGET_SECONDS
     MAX_ARTICLES_PER_SITE = args.max_articles
     DELAY_BETWEEN_REQUESTS = args.delay
     MAX_RETRIES = args.retries
+    SITE_BUDGET_SECONDS = args.site_budget
 
     # Resolve the target date filter — build a set of YYYY-MM-DD strings
     from datetime import timedelta
@@ -2716,40 +3179,17 @@ def main():
     print(f"\nScraping {len(urls)} site(s)...")
     print(f"Output: {args.output}\n")
 
-    # Initialize fetcher
-    fetcher = PageFetcher(use_selenium=args.selenium)
-
-    all_articles = []
-    failed_sites = []
-    try:
-        for site_url in urls:
-            # One site must never take down the run: on GitHub-runner IPs the
-            # big CDNs throw connection resets and challenge pages that a
-            # residential connection never sees, and a multi-hundred-site
-            # scrape losing everything to one of them is worse than losing
-            # that one site.
-            try:
-                articles = scrape_site(
-                    fetcher, site_url,
-                    debug_html_path=args.debug_html,
-                    debug_article_path=args.debug_article,
-                    target_dates=target_dates,
-                )
-            except KeyboardInterrupt:
-                raise
-            except Exception:
-                failed_sites.append(site_url)
-                log.error(f"  SITE FAILED (continuing): {site_url}\n{traceback.format_exc()}")
-                continue
-            all_articles.extend(articles)
-            log.info(f"  Collected {len(articles)} articles from {site_url}\n")
-    finally:
-        fetcher.close()
-
-    if failed_sites:
-        print(f"\n⚠ {len(failed_sites)} site(s) crashed and were skipped:")
-        for u in failed_sites:
-            print(f"    {u}")
+    run_started = time.monotonic()
+    all_articles, site_reports = run_sites(
+        urls,
+        workers=args.workers,
+        max_minutes=args.max_minutes,
+        use_selenium=args.selenium,
+        debug_html_path=args.debug_html,
+        debug_article_path=args.debug_article,
+        target_dates=target_dates,
+    )
+    run_meta = summarize_run(site_reports, time.monotonic() - run_started, args)
 
     if all_articles:
         # In --today / --date mode, append to the xlsx so each day's run adds
@@ -2769,11 +3209,15 @@ def main():
         print("  - The site blocks scraping requests\n")
 
     # ── JSON dashboard export ──────────────────────────────────────────────
-    if args.export_json and all_articles:
+    # Written even when nothing was collected: the outlet diagnostics in
+    # meta.sites are what explain an empty run, and the dashboard treats a
+    # missing file as "still running".
+    if args.export_json:
         export_dashboard_json(
             all_articles, args.export_json,
             universes_sheet=args.universes_sheet,
             append_mode=bool(target_dates),
+            run_meta=run_meta,
         )
         if args.git_push:
             git_push_dashboard(args.export_json)

@@ -43,6 +43,35 @@ are large), and curated phrase lists per topic (today you type the phrases).
 
 ---
 
+## Shipped 2026-09-09 — news scraper coverage
+
+**Why runs "hit a wall":** the crash in the Long Island run was already fixed
+(c1bce76), but the runs that succeeded were coming back thin — CT 2/9 outlets,
+Richmond 6/24. In dated (`--today`) mode the scraper returned after the
+WordPress API and eight guessed feed paths; sitemap, homepage discovery and
+per-page fetches were dead code in the only mode the workflow uses. WAF 403s
+ended a site on the plain client while cloudscraper sat unused, a 429 on the
+WP probe cost 105s before the RSS fallback, nothing bounded a run against the
+6-hour job limit, and an empty run wrote no JSON (the app then spun forever).
+
+| Area | Outcome |
+|---|---|
+| Feed discovery | Homepage `<link rel=alternate>` + feed-shaped anchors; feed paths for BLOX, Arc, TEGNA, Hearst |
+| WAF / TLS | 401/403/406/503 on the plain client retry via the browser profile; `www.` cert mismatches self-correct |
+| Dated runs | Fall through to news sitemap and homepage links, up to 12 page fetches, filtered by extracted date |
+| Budget | `--workers 6`, `--max-minutes 300` (workflow), soft 150s per-site budget; partial results always exported |
+| Diagnostics | Per-outlet status in `meta.sites`, GitHub job summary table, "Outlet Coverage" panel on the news report |
+| Workflow | Manifest + commit run on failure (project flips to *failed*), push retries after rebase, `dry_run` input uploads an artifact instead of committing |
+| Tests | `python3 scripts/tests/test_news_scraper.py` — local fake-outlet server, no network |
+
+**Unverified against real sites:** cloud sessions cannot push to this repo yet
+(Claude GitHub App not installed), so the cloud dry run has not been made.
+First thing after pushing: dispatch `scrape.yml` on the branch with
+`dry_run=true`, states `CT,NY`, DMA `New York, NY - CT - NJ - PA`, days 7,
+and read the *Outlet coverage* table in the job summary.
+
+---
+
 ## Shipped 2026-08-07/08
 
 | Area | Outcome |
@@ -113,8 +142,11 @@ names internal next steps:
 - [ ] **Re-run the Long Island scrape after pushing** — run 31822970969 died
       because CI-only CDN hostility hit three fatal paths in the scraper
       (date-form Retry-After, unguarded WP-API size probes, no per-site
-      isolation). Fixed in c1bce76; the workflow runs whatever is on main, so
-      push before re-running. Use "Re-run Scrape" on the failed project —
-      the parameters were saved
+      isolation). Fixed in c1bce76; coverage fixes shipped 2026-09-09. The
+      workflow runs whatever is on main, so push before re-running. Use
+      "Re-run Scrape" on the failed project — the parameters were saved
+- [ ] **Install the Claude GitHub App on this repo** — cloud sessions can read
+      but not push (`403` from the git proxy and from the API), so every change
+      has to be pushed by hand
 - [ ] **LegiScan** — survey submitted; would fill pre-2017 history and the Texas
       gap (Open States publishes no recent Texas floor votes)

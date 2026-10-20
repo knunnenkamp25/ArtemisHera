@@ -38,6 +38,14 @@ on:
         description: 'Max articles per site'
         required: false
         default: '50'
+      workers:
+        description: 'Sites scraped in parallel'
+        required: false
+        default: '6'
+      dry_run:
+        description: 'true = upload results as an artifact instead of committing them'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write
@@ -45,6 +53,9 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # The scraper stops starting new sites at --max-minutes and exports what it
+    # has; this ceiling only exists so a hung process cannot run for six hours.
+    timeout-minutes: 345
     steps:
       - uses: actions/checkout@v4
 
@@ -53,9 +64,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 cloudscraper openpyxl lxml
+        run: pip install requests beautifulsoup4 cloudscraper openpyxl lxml brotli
 
       - name: Run scraper
+        id: scrape
         env:
           URLS: ${{ inputs.urls }}
           MODE: ${{ inputs.mode }}
@@ -64,10 +76,12 @@ jobs:
           TYPES: ${{ inputs.types }}
           DAYS: ${{ inputs.days }}
           MAXA: ${{ inputs.max_articles }}
+          WORKERS: ${{ inputs.workers }}
           PID: ${{ inputs.project_id }}
         run: |
           mkdir -p data/news
           ARGS="--export-json data/news/${PID}.json --max-articles ${MAXA} -o /tmp/${PID}.xlsx"
+          ARGS="$ARGS --workers ${WORKERS:-6} --max-minutes 300"
           if [ "${DAYS}" != "0" ]; then ARGS="$ARGS --today --days ${DAYS}"; fi
 
           if [ "${MODE}" = "web" ]; then
@@ -98,42 +112,75 @@ jobs:
           if [ "${COUNT}" -eq 0 ]; then echo "No sites matched the selection" && exit 1; fi
           python scripts/news_scraper.py -f /tmp/urls.txt $ARGS
 
+      # Runs even when the scraper failed, so the app sees "failed" rather than
+      # a project stuck on "running" forever.
       - name: Update project manifest
+        if: always()
         env:
           PID: ${{ inputs.project_id }}
           PNAME: ${{ inputs.project_name }}
           MODE: ${{ inputs.mode }}
+          OUTCOME: ${{ steps.scrape.outcome }}
         run: |
           python - <<'EOF'
           import json, os, datetime
           pid = os.environ['PID']; pname = os.environ['PNAME']; mode = os.environ.get('MODE','web')
+          ok = os.environ.get('OUTCOME') == 'success'
           path = 'data/projects.json'
           try:
               projects = json.load(open(path))
           except Exception:
               projects = []
+          count, outlets = 0, None
           try:
               result = json.load(open(f'data/news/{pid}.json'))
-              count = result.get('meta', {}).get('total', len(result.get('articles', [])))
+              meta = result.get('meta', {})
+              count = meta.get('total', len(result.get('articles', [])))
+              o = meta.get('outlets')
+              if o: outlets = f"{o.get('produced', 0)}/{o.get('tried', 0)} outlets"
           except Exception:
-              count = 0
+              ok = False
+          summary = f'{count} articles collected' + (f' · {outlets}' if outlets else '')
+          if not ok: summary = 'Run failed — ' + summary
           now = datetime.datetime.utcnow().isoformat() + 'Z'
           projects = [p for p in projects if p.get('id') != pid]
           projects.insert(0, {
               'id': pid, 'name': pname,
               'type': 'news-scrape' if mode == 'news' else 'web-scrape',
-              'status': 'complete', 'subject': 'Cloud scrape',
-              'summary': f'{count} articles collected',
+              'status': 'complete' if ok else 'failed', 'subject': 'Cloud scrape',
+              'summary': summary,
               'created': now, 'updated': now,
           })
           json.dump(projects, open(path, 'w'), indent=2)
+          print(summary)
           EOF
 
+      - name: Upload results (dry run)
+        if: always() && inputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-${{ inputs.project_id }}
+          path: |
+            data/news/${{ inputs.project_id }}.json
+            data/projects.json
+          if-no-files-found: warn
+
       - name: Commit results
+        if: always() && inputs.dry_run != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          git diff --staged --quiet && echo "No changes" || git commit -m "Scrape results: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
-          git pull --rebase origin main || true
-          git push
+          if git diff --staged --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Scrape results: ${{ inputs.project_name }} [${{ inputs.project_id }}]"
+          # Another run may have landed on the branch meanwhile: rebase and retry.
+          for i in 1 2 3 4 5; do
+            if git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}"; then
+              exit 0
+            fi
+            echo "push attempt $i failed — retrying"
+            git rebase --abort 2>/dev/null || true
+            sleep $((i * 5))
+          done
+          echo "could not push results after 5 attempts"
+          exit 1

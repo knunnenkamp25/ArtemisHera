@@ -588,6 +588,7 @@ const Report = {
     const articles = data.articles || [];
     const keywords = data.keywords || [];
     const sources = data.sources || {};
+    const outlets = data.meta?.outlets;
     this.state = { meta, articles, filtered: [...articles], activeSource: '', newsQ: '' };
 
     $('#view').innerHTML = `
@@ -599,9 +600,11 @@ const Report = {
 
       <div class="stats">
         <div class="stat"><div class="lbl">Articles</div><div class="val gold">${articles.length}</div></div>
-        <div class="stat"><div class="lbl">Sources</div><div class="val pine">${Object.keys(sources).length}</div></div>
+        <div class="stat"><div class="lbl">${outlets ? 'Outlets Producing' : 'Sources'}</div>
+          <div class="val pine">${outlets ? `${outlets.produced}<span style="font-size:16px;color:var(--bark)"> / ${outlets.tried}</span>` : Object.keys(sources).length}</div></div>
         <div class="stat"><div class="lbl">Keywords Tracked</div><div class="val pine">${keywords.length}</div></div>
       </div>
+      ${this.outletCoverage(data.meta)}
 
       <div class="section-h"><h2>Keyword Cloud</h2><span class="hint">sized by frequency · gold = strong universe match</span></div>
       <div class="chipgrid">${keywords.slice(0, 50).map(k =>
@@ -639,6 +642,47 @@ const Report = {
       this.renderNewsList();
     });
     this.renderNewsList();
+  },
+
+  // Why a scrape came back thin: the cloud scraper reports every outlet it
+  // tried and how it ended (meta.sites). Older result files have no such
+  // block and render nothing here.
+  OUTLET_STATUS: {
+    ok:           ['Produced articles', 'yes'],
+    no_recent:    ['Reachable — nothing new in the date window', 'other'],
+    no_feed:      ['Reachable — no feed, API or recognisable article links', 'other'],
+    no_articles:  ['Reachable — nothing extractable', 'other'],
+    blocked:      ['Blocked the cloud runner (WAF / bot protection)', 'no'],
+    rate_limited: ['Rate-limited every request', 'no'],
+    unreachable:  ['Unreachable (DNS / TLS / connection)', 'no'],
+    crashed:      ['Scraper error', 'no'],
+    skipped:      ['Not attempted — run hit its time budget', 'other'],
+  },
+
+  outletCoverage(meta) {
+    const sites = meta?.sites;
+    if (!Array.isArray(sites) || !sites.length) return '';
+    const by = meta.outlets?.by_status || {};
+    const run = meta.run || {};
+    const order = Object.keys(this.OUTLET_STATUS);
+    const chips = order.filter(k => by[k]).map(k =>
+      `<span class="badge ${this.OUTLET_STATUS[k][1]}" title="${esc(this.OUTLET_STATUS[k][0])}">${esc(k.replace('_', ' '))} ${by[k]}</span>`).join(' ');
+    const quiet = sites.filter(s => s.status !== 'ok')
+      .sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+    const mins = run.elapsed_seconds ? (run.elapsed_seconds / 60).toFixed(1) + ' min' : '';
+    return `
+      <div class="card panel" style="margin-top:4px">
+        <div class="section-h" style="margin-top:0"><h2 style="font-size:16px">Outlet Coverage</h2>
+          <span class="hint">${esc(mins)}${run.workers > 1 ? ` · ${run.workers} parallel workers` : ''}${run.budget_hit ? ' · <b style="color:var(--sev-major)">time budget hit</b>' : ''}</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px">${chips}</div>
+        ${quiet.length ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;color:var(--bark)">${quiet.length} outlet${quiet.length > 1 ? 's' : ''} produced nothing — show why</summary>
+          <div style="overflow-x:auto"><table class="tbl" style="margin-top:8px;font-size:12.5px;width:100%">
+            <tr><th style="text-align:left">Outlet</th><th style="text-align:left">Outcome</th><th style="text-align:left">Detail</th></tr>
+            ${quiet.map(s => `<tr><td><a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener">${esc(s.domain || s.url)}</a></td>
+              <td>${esc((this.OUTLET_STATUS[s.status] || [s.status])[0])}</td>
+              <td style="color:var(--bark)">${esc(s.note || '')}${s.found ? ` (${s.found} found)` : ''}</td></tr>`).join('')}
+          </table></div></details>` : ''}
+      </div>`;
   },
 
   renderNewsList() {
