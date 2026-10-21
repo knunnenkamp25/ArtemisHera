@@ -458,13 +458,7 @@ const Report = {
           <div class="card side-panel">
             <h4>The Players</h4>
             <div style="font-size:11.5px;color:var(--bark);margin-bottom:8px">Floor votes on matched bills${Object.keys(partyCounts).length ? ' · ' + Object.entries(partyCounts).map(([p, n]) => `${esc(p.slice(0, 3))} ${n}`).join(' · ') : ''}</div>
-            <div class="src-item ${!this.state.activeLegislator ? 'active' : ''}" data-leg="">All legislators <span class="n">${bills.length} bills</span></div>
-            ${legislators.slice(0, 40).map(L => `
-              <div class="src-item" data-leg="${esc(L.state + ':' + L.people_id)}" title="${esc(L.bills.join(', '))}">
-                <span>${esc(L.name)} <span style="color:var(--tan);font-size:11px">${esc((L.party || '?')[0])}-${esc(L.state)}${L.district ? ' ' + esc(String(L.district)) : ''}</span></span>
-                <span class="n" title="Yes / No"><span style="color:var(--pine)">${L.yes}</span>/<span style="color:var(--sev-major)">${L.no}</span></span>
-              </div>`).join('')}
-            ${legislators.length > 40 ? `<div style="font-size:11.5px;color:var(--tan);padding:6px 8px">+${legislators.length - 40} more in the CSV export</div>` : ''}
+            <div id="tp-players"></div>
           </div>
         </div>
         <div>
@@ -491,9 +485,12 @@ const Report = {
     $('#tp-chamber').onchange = e => { this.state.tChamber = e.target.value; this.applyTopicFilters(); };
     $('#tp-result').onchange = e => { this.state.tResult = e.target.value; this.applyTopicFilters(); };
     $('#tp-floor').onchange = e => { this.state.floorOnly = e.target.checked; this.renderTopicTable(); };
-    $$('#view .src-item[data-leg]').forEach(el => el.onclick = () => {
+    // Delegated: the panel re-renders when the state filter changes
+    $('#tp-players').addEventListener('click', e => {
+      const el = e.target.closest('.src-item[data-leg]');
+      if (!el) return;
       this.state.activeLegislator = el.dataset.leg;
-      $$('#view .src-item[data-leg]').forEach(x => x.classList.toggle('active', x === el));
+      $$('#tp-players .src-item[data-leg]').forEach(x => x.classList.toggle('active', x === el));
       this.applyTopicFilters();
     });
     $('#tp-body').addEventListener('click', e => {
@@ -503,9 +500,28 @@ const Report = {
     this.applyTopicFilters();
   },
 
+  // The players panel follows the state filter: a nationwide search would
+  // otherwise show forty members of whichever chamber voted most often.
+  renderTopicPlayers() {
+    const st = this.state;
+    const all = st.data.legislators || [];
+    const pool = st.tState ? all.filter(L => L.state === st.tState) : all;
+    $('#tp-players').innerHTML = `
+      <div class="src-item ${!st.activeLegislator ? 'active' : ''}" data-leg="">All legislators${st.tState ? ' in ' + esc(st.tState) : ''} <span class="n">${pool.length}</span></div>
+      ${pool.slice(0, 40).map(L => `
+        <div class="src-item ${st.activeLegislator === L.state + ':' + L.people_id ? 'active' : ''}" data-leg="${esc(L.state + ':' + L.people_id)}" title="${esc(L.bills.join(', '))}">
+          <span>${esc(L.name)} <span style="color:var(--tan);font-size:11px">${esc((L.party || '?')[0])}-${esc(L.state)}${L.district ? ' ' + esc(String(L.district)) : ''}</span></span>
+          <span class="n" title="Yes / No"><span style="color:var(--pine)">${L.yes}</span>/<span style="color:var(--sev-major)">${L.no}</span></span>
+        </div>`).join('')}
+      ${pool.length > 40 ? `<div style="font-size:11.5px;color:var(--tan);padding:6px 8px">+${pool.length - 40} more — filter by state, or see the votes CSV</div>` : ''}`;
+  },
+
   applyTopicFilters() {
     const st = this.state;
     const [legState, legId] = (st.activeLegislator || '').split(':');
+    // A legislator from another state is meaningless once the state changes
+    if (legState && st.tState && legState !== st.tState) st.activeLegislator = '';
+    this.renderTopicPlayers();
     st.filtered = st.bills.filter(b => {
       if (st.tState && b.state !== st.tState) return false;
       if (st.tChamber && !(b.chambers || []).includes(st.tChamber)) return false;

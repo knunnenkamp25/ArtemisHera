@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -42,7 +43,9 @@ COMMITTEE_MAX_VOTERS = 12  # fallback when the chamber size is unknown
 def load(base, path):
     """Read a JSON file from the data repo (URL) or a local copy (directory)."""
     if base.startswith('http'):
-        req = urllib.request.Request(f'{base}/{path}', headers={'User-Agent': 'ArtemisHera/1.0'})
+        # Session ids can carry spaces ("20232024 Special Session 2" in CA)
+        quoted = '/'.join(urllib.parse.quote(seg) for seg in path.split('/'))
+        req = urllib.request.Request(f'{base}/{quoted}', headers={'User-Agent': 'ArtemisHera/1.0'})
         with urllib.request.urlopen(req, timeout=300) as r:
             body = r.read()
         return json.loads(body), len(body)
@@ -293,7 +296,7 @@ def main():
         L['bills'] = sorted(L['bills'])
         L['votes'] = L['yes'] + L['no'] + L['other']
         legis_out.append(L)
-    legis_out.sort(key=lambda L: (-L['votes'], L['name']))
+    legis_out.sort(key=lambda L: (-L['votes'], -abs(L['yes'] - L['no']), L['name']))
 
     payload = {
         'meta': {
