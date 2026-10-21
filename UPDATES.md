@@ -65,12 +65,12 @@ WP probe cost 105s before the RSS fallback, nothing bounded a run against the
 | Tests | `python3 scripts/tests/test_news_scraper.py` — local fake-outlet server, no network |
 
 **Verified 2026-10-21 on the runner** (CT + NY outlets in the New York DMA,
-7 days, four dry runs): **28 of 52 outlets produced 454 articles in 2.3
+7 days, six dry runs): **29 of 52 outlets produced 463 articles in 2.8
 minutes**, against 2 of 9 outlets and 47 articles in the 8/19 run. The dry
 runs also found and fixed: `www.` aliases dropping every homepage link
 (nymag), RSS index pages that list the real feeds (Hearst), sitemaps only
-named in robots.txt, gzipped sitemaps, archive sitemaps listed oldest-first
-(liherald), and duplicate stories across inventory entries on one host
+named in robots.txt, gzipped sitemaps, archive sitemaps listed oldest-first and
+numbered sitemap chunks tried in the wrong order (liherald), and duplicate stories across inventory entries on one host
 (patch.com sections).
 
 **Hard walls that remain (reported as `blocked` on the report page):**
