@@ -34,6 +34,7 @@ import sys
 import time
 import logging
 import argparse
+import gzip
 import hashlib
 import traceback
 import threading
@@ -1147,37 +1148,84 @@ def scrape_articles_from_rss(
     return []
 
 
+def _fetch_sitemap_text(fetcher: "PageFetcher", url: str) -> Optional[str]:
+    """Sitemaps are often served gzipped (.xml.gz, or gzip bytes with an XML
+    content-type); fetch() would hand back mojibake for those."""
+    try:
+        resp = fetcher._get(fetcher.discovery_session, url, timeout=REQUEST_TIMEOUT)
+        fetcher._note(resp.status_code)
+        if resp.status_code in (401, 403, 406, 503):
+            resp = fetcher._get(fetcher.article_session, url, timeout=REQUEST_TIMEOUT)
+            fetcher._note(resp.status_code)
+        if resp.status_code != 200:
+            log.info(f"    sitemap {url} → HTTP {resp.status_code}")
+            return None
+        raw = resp.content
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        text = raw.decode("utf-8", errors="replace")
+        log.info(f"    sitemap {url} → {len(raw)//1024} KB")
+        return text
+    except Exception as e:
+        fetcher._note(error=e)
+        log.info(f"    sitemap {url} → {type(e).__name__}")
+        return None
+
+
+def _sitemap_entries(soup, site_url: str) -> list[str]:
+    """Article URLs from a <urlset>, newest first when <lastmod> is present.
+    liherald.com's archive sitemap lists 27,000 URLs oldest-first; without
+    this the dated run fetched twelve stories from years ago."""
+    entries = []
+    for url_tag in soup.find_all("url"):
+        loc = url_tag.find("loc")
+        if not loc:
+            continue
+        href = loc.get_text(strip=True)
+        if not href or not same_site(href, site_url) or not looks_like_article_url(href):
+            continue
+        lm = url_tag.find("lastmod")
+        pub = url_tag.find("publication_date") or url_tag.find("news:publication_date")
+        stamp = (lm.get_text(strip=True) if lm else "") or (pub.get_text(strip=True) if pub else "")
+        entries.append((stamp, href.split("?")[0].rstrip("/")))
+    if any(st for st, _ in entries):
+        entries.sort(key=lambda e: e[0], reverse=True)   # ISO dates sort lexically
+    return [h for _, h in entries]
+
+
 def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[str]:
     """Try to find article links via XML sitemap.
 
-    Uses fail-fast mode for probing (no retries per path). Child sitemaps
-    within a sitemap index get one retry since they're known to exist.
+    robots.txt sitemaps first, then guessed paths; child sitemaps of an index
+    are visited newest-first and only a handful deep.
     """
     base = site_url.rstrip("/")
-    domain = urlparse(site_url).netloc
 
     def _parse_sitemap(xml_text: str, depth: int = 0) -> list[str]:
         """Parse a sitemap XML; recursively follows sitemap index entries."""
         soup = BeautifulSoup(xml_text, "lxml-xml")
         links = []
-        # Sitemap index — recurse into child sitemaps. News/recent children
-        # first, and only a handful: a full archive index can list hundreds.
-        children = [c.find("loc").get_text(strip=True) for c in soup.find_all("sitemap") if c.find("loc")]
-        children.sort(key=lambda u: (not re.search(r"news|recent|latest|post", u, re.I), u))
-        for child_url in children[:6] if depth == 0 else children[:2]:
-            child_html = fetcher.fetch(child_url, use_discovery_session=True, max_retries=1)
-            if child_html:
-                links.extend(_parse_sitemap(child_html, depth + 1))
+        # Sitemap index — recurse into child sitemaps: news/recent names and
+        # the most recently modified first, and only a handful, since a full
+        # archive index can list hundreds.
+        children = []
+        for c in soup.find_all("sitemap"):
+            loc = c.find("loc")
+            if loc:
+                lm = c.find("lastmod")
+                children.append((lm.get_text(strip=True) if lm else "", loc.get_text(strip=True)))
+        # Newest lastmod first, then news-ish names ahead of the archive
+        # (both sorts are stable, so the second keeps the first's order)
+        children.sort(key=lambda e: e[0], reverse=True)
+        children.sort(key=lambda e: not re.search(r"news|recent|latest|post", e[1], re.I))
+        for _, child_url in children[:6] if depth == 0 else children[:2]:
+            child_xml = _fetch_sitemap_text(fetcher, child_url)
+            if child_xml:
+                links.extend(_parse_sitemap(child_xml, depth + 1))
                 time.sleep(0.5)
             if len(links) >= MAX_ARTICLES_PER_SITE * 2:
                 break
-        # Regular sitemap — collect <url><loc> entries that look like articles
-        for url_tag in soup.find_all("url"):
-            loc = url_tag.find("loc")
-            if loc:
-                href = loc.get_text(strip=True)
-                if href and same_site(href, site_url) and looks_like_article_url(href):
-                    links.append(href.split("?")[0].rstrip("/"))
+        links.extend(_sitemap_entries(soup, site_url))
         return links
 
     # robots.txt names the real sitemaps (news sitemaps especially) on most
@@ -1195,7 +1243,7 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
     for url in dict.fromkeys(candidates):
         path = url[len(base):] if url.startswith(base) else url
         try:
-            xml_text = fetcher.fetch(url, use_discovery_session=True, max_retries=0)
+            xml_text = _fetch_sitemap_text(fetcher, url)
             if not xml_text or "<" not in xml_text:
                 continue
             links = _parse_sitemap(xml_text)
@@ -2028,7 +2076,10 @@ def scrape_site(
             log.info(f"  (Open this file to check if a Cloudflare challenge page was returned)")
 
         article_urls = discover_article_links(html, site_url)
-        log.info(f"  Found {len(article_urls)} candidate article links via HTML")
+        n_anchors = len(re.findall(r"<a\s", html, re.I))
+        log.info(f"  Found {len(article_urls)} candidate article links via HTML "
+                 f"({len(html)//1024} KB, {n_anchors} anchors"
+                 f"{', looks like a bot challenge' if _looks_like_cf_challenge(html) else ''})")
 
         if not article_urls:
             # Try common section pages
@@ -3042,9 +3093,21 @@ def run_sites(
             except Exception:
                 pass
 
+    # Two inventory entries can resolve to one site (patch.com sections, a
+    # www. alias): the same story must not appear twice in the dashboard.
     all_articles: list[Article] = []
+    seen_urls: set[str] = set()
+    dupes = 0
     for arts in results:
-        all_articles.extend(arts or [])
+        for a in arts or []:
+            key = (a.url or "").split("#")[0].rstrip("/").lower()
+            if key and key in seen_urls:
+                dupes += 1
+                continue
+            seen_urls.add(key)
+            all_articles.append(a)
+    if dupes:
+        log.info(f"Dropped {dupes} article(s) collected twice across outlets")
     return all_articles, reports
 
 

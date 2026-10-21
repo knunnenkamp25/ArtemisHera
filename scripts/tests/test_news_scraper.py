@@ -159,8 +159,13 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "/robots.txt":
             return self._send(200, f"User-agent: *\nSitemap: {b}/arc/outboundfeeds/sitemap-archive/\nSitemap: {b}/custom/news-sitemap-2026.xml\n", "text/plain")
         if rest == "/custom/news-sitemap-2026.xml":
-            urls = "".join(f"<url><loc>{b}/{s}</loc></url>" for s in slugs)
-            return self._send(200, f'<?xml version="1.0"?><urlset>{urls}</urlset>', "application/xml")
+            # gzipped, oldest-first: the parser must decompress and reorder
+            import gzip as _gz
+            old = f"<url><loc>{b}/news/2019/01/01/an-ancient-story-listed-first-in-the-sitemap</loc><lastmod>2019-01-01</lastmod></url>"
+            urls = old + "".join(f"<url><loc>{b}/{s}</loc><lastmod>{TODAY_ISO}</lastmod></url>" for s in slugs)
+            data = _gz.compress(f'<?xml version="1.0"?><urlset>{urls}</urlset>'.encode())
+            self.send_response(200); self.send_header("Content-Type", "application/x-gzip")
+            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         for i, s in enumerate(slugs):
             if rest == "/" + s:
                 return self._send(200, article_page(f"Robots listed headline {i} for testing", TODAY_ISO, s))
@@ -249,10 +254,22 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(len(arts), 2, diag)
         self.assertEqual(diag["method"], "rss")
 
-    def test_robots_txt_sitemap_is_used(self):
-        arts, diag = self.run_one("siteH")
+    def test_robots_txt_sitemap_is_used_gzipped_and_newest_first(self):
+        ns.DATE_MODE_PAGE_CAP, cap = 2, ns.DATE_MODE_PAGE_CAP
+        try:
+            arts, diag = self.run_one("siteH")
+        finally:
+            ns.DATE_MODE_PAGE_CAP = cap
+        # Only two page fetches allowed: they must be the two dated stories,
+        # not the 2019 entry the sitemap lists first.
         self.assertEqual(len(arts), 2, diag)
         self.assertEqual(diag["method"], "sitemap")
+
+    def test_same_story_from_two_outlets_is_kept_once(self):
+        urls = [self.site("siteA"), self.site("siteA")]
+        arts, reports = ns.run_sites(urls, workers=2, target_dates={TODAY_ISO})
+        self.assertEqual(len(arts), 3)
+        self.assertEqual([r["kept"] for r in reports], [3, 3])
 
     def test_links_survive_a_www_redirect(self):
         html = '<a href="https://nymag.com/intelligencer/article/a-long-headline-about-the-mayor-race">x</a>'
