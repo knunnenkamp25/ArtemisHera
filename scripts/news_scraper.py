@@ -210,7 +210,7 @@ class PageFetcher:
     def begin_site(self):
         """Reset the per-site tallies that feed the outlet diagnostics."""
         self.site_stats = {"ok": 0, "blocked": 0, "rate_limited": 0, "errors": 0,
-                           "challenge_fallback": 0, "last_error": ""}
+                           "challenge_fallback": 0, "challenge_page": False, "last_error": ""}
 
     def _note(self, status_code: Optional[int] = None, error: Optional[str] = None):
         st = self.site_stats
@@ -1172,25 +1172,39 @@ def _fetch_sitemap_text(fetcher: "PageFetcher", url: str) -> Optional[str]:
         return None
 
 
-def _sitemap_entries(soup, site_url: str) -> list[str]:
-    """Article URLs from a <urlset>, newest first when <lastmod> is present.
-    liherald.com's archive sitemap lists 27,000 URLs oldest-first; without
-    this the dated run fetched twelve stories from years ago."""
+_URL_BLOCK_RE = re.compile(r"<url\b.*?</url>", re.S | re.I)
+_LOC_RE = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.S | re.I)
+_STAMP_RE = re.compile(r"<(?:[\w-]+:)?(?:lastmod|publication_date)>\s*(\d{4}-\d{2}-\d{2}[^<]*)<", re.I)
+
+
+def _sitemap_entries(xml_text: str, site_url: str) -> list[str]:
+    """Article URLs from a <urlset>, newest first.
+
+    Regex rather than a DOM: liherald.com's Google News sitemap is 12 MB and
+    27,000 entries, which BeautifulSoup chewed on for eleven seconds and then
+    handed back oldest-first because the news:publication_date tags were not
+    read. Dated entries sort by date; undated ones put URLs carrying the
+    current or previous year first, then reverse file order, since most CMSes
+    append the newest entries last.
+    """
     entries = []
-    for url_tag in soup.find_all("url"):
-        loc = url_tag.find("loc")
-        if not loc:
+    for block in _URL_BLOCK_RE.findall(xml_text):
+        m = _LOC_RE.search(block)
+        if not m:
             continue
-        href = loc.get_text(strip=True)
+        href = m.group(1).strip()
         if not href or not same_site(href, site_url) or not looks_like_article_url(href):
             continue
-        lm = url_tag.find("lastmod")
-        pub = url_tag.find("publication_date") or url_tag.find("news:publication_date")
-        stamp = (lm.get_text(strip=True) if lm else "") or (pub.get_text(strip=True) if pub else "")
-        entries.append((stamp, href.split("?")[0].rstrip("/")))
+        st = _STAMP_RE.search(block)
+        entries.append((st.group(1)[:19] if st else "", href.split("?")[0].rstrip("/")))
     if any(st for st, _ in entries):
         entries.sort(key=lambda e: e[0], reverse=True)   # ISO dates sort lexically
-    return [h for _, h in entries]
+        return [h for _, h in entries]
+    year = datetime.now().year
+    hint = re.compile(rf"/({year}|{year - 1})/")
+    recent = [h for _, h in entries if hint.search(h)]
+    rest = [h for _, h in entries if not hint.search(h)]
+    return recent + rest[::-1]
 
 
 def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[str]:
@@ -1203,13 +1217,15 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
 
     def _parse_sitemap(xml_text: str, depth: int = 0) -> list[str]:
         """Parse a sitemap XML; recursively follows sitemap index entries."""
-        soup = BeautifulSoup(xml_text, "lxml-xml")
         links = []
+        # A sitemap index is small; only a DOM parse of those (a 12 MB urlset
+        # has no <sitemap> children and skips this).
+        soup = BeautifulSoup(xml_text, "lxml-xml") if "<sitemap" in xml_text[:20000] or "<sitemapindex" in xml_text[:2000] else None
         # Sitemap index — recurse into child sitemaps: news/recent names and
         # the most recently modified first, and only a handful, since a full
         # archive index can list hundreds.
         children = []
-        for c in soup.find_all("sitemap"):
+        for c in (soup.find_all("sitemap") if soup is not None else []):
             loc = c.find("loc")
             if loc:
                 lm = c.find("lastmod")
@@ -1225,7 +1241,7 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
                 time.sleep(0.5)
             if len(links) >= MAX_ARTICLES_PER_SITE * 2:
                 break
-        links.extend(_sitemap_entries(soup, site_url))
+        links.extend(_sitemap_entries(xml_text, site_url))
         return links
 
     # robots.txt names the real sitemaps (news sitemaps especially) on most
@@ -1902,6 +1918,9 @@ def _finish_site(diag: dict, started: float, articles: list, fetcher: "PageFetch
         diag["status"] = status
     elif articles:
         diag["status"] = "ok"
+    elif st.get("challenge_page"):
+        diag["status"] = "blocked"
+        diag["note"] = "serves a bot-challenge page to the runner"
     elif diag.get("found", 0) > 0:
         diag["status"] = "no_recent"
     elif st.get("ok", 0) == 0 and st.get("blocked", 0) > 0:
@@ -1970,6 +1989,12 @@ def scrape_site(
         site_domain = urlparse(site_url).netloc
         diag["note"] = f"host corrected to {site_domain}"
         diag["domain"] = _outlet_label(site_url)
+    if homepage_html and len(homepage_html) < 8000 and _looks_like_cf_challenge(homepage_html):
+        # Hearst, among others, answers datacenter IPs with a 2 KB challenge
+        # page on every URL — sitemaps and article pages included. Say so
+        # rather than reporting "no feed".
+        fetcher.site_stats["challenge_page"] = True
+        log.info(f"  Homepage is a bot-challenge page ({len(homepage_html)} bytes) — the runner is being screened")
     advertised_feeds = discover_feed_urls_from_html(homepage_html, site_url) if homepage_html else []
     if advertised_feeds:
         log.info(f"  Homepage advertises {len(advertised_feeds)} feed(s): {advertised_feeds[0]}"

@@ -81,6 +81,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.site_g(rest)
         if site == "siteH":
             return self.site_h(rest)
+        if site == "siteJ":   # Hearst-style: a tiny challenge page on every URL
+            return self._send(200, "<html><head><title>Just a moment...</title></head><body>"
+                                   "Checking your browser before accessing the site. Ray ID: abc</body></html>")
         return self._send(404, "nope")
 
     # Feed only advertised via <link rel=alternate> at a non-standard path
@@ -264,6 +267,26 @@ class ScraperTests(unittest.TestCase):
         # not the 2019 entry the sitemap lists first.
         self.assertEqual(len(arts), 2, diag)
         self.assertEqual(diag["method"], "sitemap")
+
+    def test_challenge_page_on_every_url_is_reported_as_blocked(self):
+        arts, diag = self.run_one("siteJ")
+        self.assertEqual(arts, [])
+        self.assertEqual(diag["status"], "blocked")
+        self.assertIn("challenge", diag["note"])
+
+    def test_sitemap_entries_newest_first_with_news_dates_or_year_hint(self):
+        base = "https://x.com"
+        dated = (f'<urlset xmlns:news="n"><url><loc>{base}/news/old-story-with-a-long-enough-slug</loc>'
+                 f'<news:news><news:publication_date>2019-01-01T00:00:00Z</news:publication_date></news:news></url>'
+                 f'<url><loc>{base}/news/new-story-with-a-long-enough-slug</loc><lastmod>2026-10-21</lastmod></url></urlset>')
+        self.assertEqual([u.rsplit("/", 1)[1][:3] for u in ns._sitemap_entries(dated, base)], ["new", "old"])
+        y = ns.datetime.now().year
+        undated = "".join(f"<url><loc>{base}/{p}</loc></url>" for p in (
+            "news/2011/12/23/ancient-story-with-a-long-slug", "news/2012/01/05/another-ancient-long-slug",
+            f"news/{y}/10/20/fresh-story-with-a-long-enough-slug", "news/2013/02/01/undated-but-later-in-file"))
+        got = ns._sitemap_entries(f"<urlset>{undated}</urlset>", base)
+        self.assertTrue(got[0].endswith("fresh-story-with-a-long-enough-slug"))
+        self.assertTrue(got[1].endswith("undated-but-later-in-file"))
 
     def test_same_story_from_two_outlets_is_kept_once(self):
         urls = [self.site("siteA"), self.site("siteA")]
