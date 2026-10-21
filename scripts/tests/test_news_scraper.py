@@ -160,7 +160,14 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "/":
             return self._send(200, "<html><body>nothing to see</body></html>")
         if rest == "/robots.txt":
-            return self._send(200, f"User-agent: *\nSitemap: {b}/arc/outboundfeeds/sitemap-archive/\nSitemap: {b}/custom/news-sitemap-2026.xml\n", "text/plain")
+            # chunk 1 is an archive that sorts first by name; chunk 2 is current
+            return self._send(200, f"User-agent: *\nSitemap: {b}/sitemaps/all-1.xml\nSitemap: {b}/sitemaps/all-2.xml\n"
+                                   f"Sitemap: {b}/custom/news-sitemap-2026.xml\n", "text/plain")
+        if rest == "/sitemaps/all-1.xml":
+            urls = f"<url><loc>{b}/news/2011/01/01/an-archived-story-with-a-long-slug</loc><lastmod>2011-01-01</lastmod></url>"
+            return self._send(200, f'<?xml version="1.0"?><urlset>{urls}</urlset>', "application/xml")
+        if rest == "/sitemaps/all-2.xml":
+            return self._send(200, '<?xml version="1.0"?><urlset></urlset>', "application/xml")
         if rest == "/custom/news-sitemap-2026.xml":
             # gzipped, oldest-first: the parser must decompress and reorder
             import gzip as _gz
@@ -287,6 +294,12 @@ class ScraperTests(unittest.TestCase):
         got = ns._sitemap_entries(f"<urlset>{undated}</urlset>", base)
         self.assertTrue(got[0].endswith("fresh-story-with-a-long-enough-slug"))
         self.assertTrue(got[1].endswith("undated-but-later-in-file"))
+
+    def test_numbered_sitemap_chunks_newest_first_and_archives_skipped(self):
+        got = ns._order_sitemap_candidates(["https://x.com/s/all-1.xml", "https://x.com/s/all-12.xml",
+                                            "https://x.com/s/all-3.xml", "https://x.com/news-sitemap.xml"])
+        self.assertEqual([u.rsplit("/", 1)[1] for u in got], ["news-sitemap.xml", "all-12.xml", "all-3.xml", "all-1.xml"])
+        self.assertEqual(ns._newest_stamp("<url><lastmod>2019-01-02</lastmod></url><url><lastmod>2011-05-05T10:00:00Z</lastmod></url>"), "2019-01-02")
 
     def test_sitemap_with_identical_stamps_orders_by_trailing_story_id(self):
         base = "https://x.com"

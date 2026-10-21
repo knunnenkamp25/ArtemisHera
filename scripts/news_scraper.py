@@ -1225,13 +1225,42 @@ def _trailing_id(href: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[str]:
+def _newest_stamp(xml_text: str) -> str:
+    """Newest lastmod / publication date in a sitemap ('' when undated)."""
+    best = ""
+    for m in _STAMP_RE.finditer(xml_text):
+        if m.group(1) > best:
+            best = m.group(1)
+    return best[:10]
+
+
+def _order_sitemap_candidates(urls: list) -> list:
+    """News-ish names first; among numbered chunks the highest number first.
+    liherald's robots.txt lists sitemaps-r2-googlenews-all-1.xml … all-6.xml,
+    and chunk 1 is the 2011 archive."""
+    def key(u):
+        m = re.search(r"(\d+)(?:\.xml(?:\.gz)?)?/?$", u)
+        return (not re.search(r"news|recent|latest", u, re.I), -(int(m.group(1)) if m else 0), u)
+    return sorted(dict.fromkeys(urls), key=key)
+
+
+def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str,
+                                target_dates: Optional[set] = None) -> list[str]:
     """Try to find article links via XML sitemap.
 
     robots.txt sitemaps first, then guessed paths; child sitemaps of an index
-    are visited newest-first and only a handful deep.
+    are visited newest-first and only a handful deep. In a dated run a sitemap
+    whose newest stamp predates the window is an archive chunk: skip it and
+    try the next candidate.
     """
     base = site_url.rstrip("/")
+    floor = ""
+    if target_dates:
+        from datetime import timedelta
+        try:
+            floor = (datetime.strptime(min(target_dates)[:10], "%Y-%m-%d") - timedelta(days=31)).strftime("%Y-%m-%d")
+        except ValueError:
+            floor = ""
 
     def _parse_sitemap(xml_text: str, depth: int = 0) -> list[str]:
         """Parse a sitemap XML; recursively follows sitemap index entries."""
@@ -1267,11 +1296,12 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
     candidates = []
     robots = fetcher.fetch(base + "/robots.txt", use_discovery_session=True, max_retries=0)
     if robots:
-        found = re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots)
-        found.sort(key=lambda u: (not re.search(r"news|recent|latest", u, re.I), u))
-        candidates.extend(u for u in found[:6] if same_site(u, site_url))
+        found = [u for u in re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots) if same_site(u, site_url)]
+        candidates.extend(_order_sitemap_candidates(found)[:8])
         if candidates:
-            log.info(f"  robots.txt lists {len(candidates)} sitemap(s)")
+            log.info(f"  robots.txt lists {len(found)} sitemap(s); trying: "
+                     + ", ".join(c[len(base):] if c.startswith(base) else c for c in candidates[:4])
+                     + (" …" if len(candidates) > 4 else ""))
     candidates.extend(base + p for p in SITEMAP_PATHS)
 
     for url in dict.fromkeys(candidates):
@@ -1280,6 +1310,11 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
             xml_text = _fetch_sitemap_text(fetcher, url)
             if not xml_text or "<" not in xml_text:
                 continue
+            if floor and "<sitemapindex" not in xml_text[:2000]:
+                newest = _newest_stamp(xml_text)
+                if newest and newest < floor:
+                    log.info(f"  Sitemap {path} is an archive (newest entry {newest}) — trying the next one")
+                    continue
             links = _parse_sitemap(xml_text)
             if links:
                 log.info(f"  Sitemap found at {path} — {len(links)} article links; first: {links[0]}")
@@ -2097,7 +2132,7 @@ def scrape_site(
     # 2. Sitemap XML (also machine-readable, good coverage of all articles)
     if not article_urls and not over_budget("sitemap discovery"):
         log.info(f"  Trying sitemap discovery...")
-        article_urls = discover_links_from_sitemap(fetcher, site_url)
+        article_urls = discover_links_from_sitemap(fetcher, site_url, target_dates=target_dates)
         if article_urls:
             discovery_method = "sitemap"
 
