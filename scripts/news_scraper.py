@@ -309,6 +309,13 @@ class PageFetcher:
             else:
                 log.info(f"  Homepage returned HTTP {resp.status_code}")
                 html = None
+            # Remember where the homepage actually lives (www.nymag.com ->
+            # nymag.com); scrape_site adopts it so feeds, sitemaps and the
+            # link filter all speak the site's own host.
+            final = getattr(resp, "url", "") or ""
+            if final and same_site(final, site_url) and urlparse(final).netloc != urlparse(site_url).netloc:
+                self.host_rewrites[urlparse(site_url).netloc] = urlparse(final).netloc
+                log.info(f"  Site answers as {urlparse(final).netloc} — using that host from here on")
             time.sleep(1.5)
             return html
         except Exception as e:
@@ -431,6 +438,17 @@ class PageFetcher:
 # RSS / Sitemap link discovery (preferred — machine-readable, no bot detection)
 # ---------------------------------------------------------------------------
 
+def _bare_host(host: str) -> str:
+    return (host or "").lower().removeprefix("www.")
+
+
+def same_site(url_a: str, url_b: str) -> bool:
+    """Same outlet regardless of the www. prefix: the inventory lists
+    www.nymag.com, the site answers as nymag.com, and an exact netloc compare
+    threw away every link on the homepage."""
+    return _bare_host(urlparse(url_a).netloc) == _bare_host(urlparse(url_b).netloc)
+
+
 # Common RSS feed paths to probe, roughly in order of how often they hit across
 # the outlet inventory. WordPress first, then the platforms most local
 # outlets actually run on: TownNews/BLOX (weeklies), Arc (Gray, Lee, WaPo),
@@ -454,9 +472,11 @@ SITEMAP_PATHS = ["/news-sitemap.xml", "/sitemap_news.xml", "/sitemap-news.xml",
                  "/post-sitemap.xml"]
 
 _FEED_HREF_RE = re.compile(
-    r"(/feed/?$|/rss/?$|\.rss$|/rss\.xml$|/feed\.xml$|/atom\.xml$|[?&]f=rss|format=rss|outputType=xml)",
+    r"(/feed/?$|/rss/?$|\.rss$|/rss\.xml$|/feed\.xml$|/atom\.xml$|[?&]f=rss|format=rss|outputType=xml"
+    r"|/rss/feed/|/feeds?/[\w.-]+\.(?:xml|rss|php)$)",
     re.IGNORECASE,
 )
+_HTML_START_RE = re.compile(r"^\s*(<!doctype\s+html|<html)", re.IGNORECASE)
 
 
 def discover_feed_urls_from_html(html: str, base_url: str) -> list[str]:
@@ -1013,7 +1033,12 @@ def scrape_articles_from_rss(
     Returns an empty list if no feed is found or the feed lacks body content.
     """
     base = site_url.rstrip("/")
-    for feed_base_url in _feed_candidates(site_url, extra_feeds):
+    candidates = _feed_candidates(site_url, extra_feeds)
+    harvested = False
+    i = 0
+    while i < len(candidates):
+        feed_base_url = candidates[i]
+        i += 1
         path = feed_base_url[len(base):] if feed_base_url.startswith(base) else feed_base_url
         try:
             # Page 1 — always fetch without ?paged= so it works on non-WordPress too
@@ -1022,6 +1047,16 @@ def scrape_articles_from_rss(
                 continue
             links, articles = _parse_rss_feed(xml_text, site_domain)
             if not links:
+                # An HTML page at a feed-looking path is usually an RSS index
+                # (Hearst's /rss/ lists /rss/feed/<section>-<id>.php). Harvest
+                # its feed links once and try them next.
+                if not harvested and _HTML_START_RE.search(xml_text[:300]) and re.search(r"rss|feed", path, re.I):
+                    harvested = True
+                    extra = [u for u in discover_feed_urls_from_html(xml_text, feed_base_url)
+                             if u not in candidates and same_site(u, site_url)]
+                    if extra:
+                        log.info(f"  {path} is an RSS index page — trying {len(extra)} feed(s) it lists")
+                        candidates[i:i] = extra
                 continue  # not a valid feed
 
             if not articles:
@@ -1121,30 +1156,44 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
     base = site_url.rstrip("/")
     domain = urlparse(site_url).netloc
 
-    def _parse_sitemap(xml_text: str) -> list[str]:
+    def _parse_sitemap(xml_text: str, depth: int = 0) -> list[str]:
         """Parse a sitemap XML; recursively follows sitemap index entries."""
         soup = BeautifulSoup(xml_text, "lxml-xml")
         links = []
-        # Sitemap index — recurse into child sitemaps
-        for loc in soup.find_all("sitemap"):
-            child_loc = loc.find("loc")
-            if child_loc:
-                child_url = child_loc.get_text(strip=True)
-                child_html = fetcher.fetch(child_url, use_discovery_session=True, max_retries=1)
-                if child_html:
-                    links.extend(_parse_sitemap(child_html))
-                    time.sleep(0.5)
+        # Sitemap index — recurse into child sitemaps. News/recent children
+        # first, and only a handful: a full archive index can list hundreds.
+        children = [c.find("loc").get_text(strip=True) for c in soup.find_all("sitemap") if c.find("loc")]
+        children.sort(key=lambda u: (not re.search(r"news|recent|latest|post", u, re.I), u))
+        for child_url in children[:6] if depth == 0 else children[:2]:
+            child_html = fetcher.fetch(child_url, use_discovery_session=True, max_retries=1)
+            if child_html:
+                links.extend(_parse_sitemap(child_html, depth + 1))
+                time.sleep(0.5)
+            if len(links) >= MAX_ARTICLES_PER_SITE * 2:
+                break
         # Regular sitemap — collect <url><loc> entries that look like articles
         for url_tag in soup.find_all("url"):
             loc = url_tag.find("loc")
             if loc:
                 href = loc.get_text(strip=True)
-                if href and urlparse(href).netloc == domain and looks_like_article_url(href):
+                if href and same_site(href, site_url) and looks_like_article_url(href):
                     links.append(href.split("?")[0].rstrip("/"))
         return links
 
-    for path in SITEMAP_PATHS:
-        url = base + path
+    # robots.txt names the real sitemaps (news sitemaps especially) on most
+    # publisher CMSes; the guessed paths below are the fallback.
+    candidates = []
+    robots = fetcher.fetch(base + "/robots.txt", use_discovery_session=True, max_retries=0)
+    if robots:
+        found = re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots)
+        found.sort(key=lambda u: (not re.search(r"news|recent|latest", u, re.I), u))
+        candidates.extend(u for u in found[:6] if same_site(u, site_url))
+        if candidates:
+            log.info(f"  robots.txt lists {len(candidates)} sitemap(s)")
+    candidates.extend(base + p for p in SITEMAP_PATHS)
+
+    for url in dict.fromkeys(candidates):
+        path = url[len(base):] if url.startswith(base) else url
         try:
             xml_text = fetcher.fetch(url, use_discovery_session=True, max_retries=0)
             if not xml_text or "<" not in xml_text:
@@ -1219,7 +1268,6 @@ def looks_like_article_url(url: str) -> bool:
 def discover_article_links(html: str, base_url: str) -> list[str]:
     """Find all probable article links on a page."""
     soup = BeautifulSoup(html, "lxml")
-    base_domain = urlparse(base_url).netloc
     seen = set()
     links = []
 
@@ -1227,8 +1275,8 @@ def discover_article_links(html: str, base_url: str) -> list[str]:
         href = a_tag["href"].strip()
         full_url = urljoin(base_url, href)
 
-        # Only follow links on the same domain
-        if urlparse(full_url).netloc != base_domain:
+        # Only follow links on the same outlet (www. or not)
+        if not same_site(full_url, base_url):
             continue
 
         # Normalize
@@ -1787,6 +1835,14 @@ def _append_to_xlsx(articles: list[Article], output_path: str):
 # Main scraping orchestrator
 # ---------------------------------------------------------------------------
 
+def _outlet_label(url: str) -> str:
+    """Host plus path for section-style outlets (patch.com/new-york/brooklyn),
+    so two outlets on one host are told apart in the diagnostics."""
+    parts = urlparse(url)
+    path = parts.path.rstrip("/")
+    return parts.netloc + (path if path else "")
+
+
 def _finish_site(diag: dict, started: float, articles: list, fetcher: "PageFetcher",
                  status: Optional[str] = None) -> list:
     """Fill in the outlet diagnostic and return the articles unchanged."""
@@ -1837,7 +1893,7 @@ def scrape_site(
     fetcher.begin_site()
     log.info(f"Scraping: {site_url}")
     site_domain = urlparse(site_url).netloc
-    diag.update({"url": site_url, "domain": site_domain, "method": None,
+    diag.update({"url": site_url, "domain": _outlet_label(site_url), "method": None,
                  "found": 0, "kept": 0, "status": "no_articles", "note": ""})
 
     def over_budget(phase: str) -> bool:
@@ -1865,6 +1921,7 @@ def scrape_site(
         site_url = fetcher.rewrite(site_url)
         site_domain = urlparse(site_url).netloc
         diag["note"] = f"host corrected to {site_domain}"
+        diag["domain"] = _outlet_label(site_url)
     advertised_feeds = discover_feed_urls_from_html(homepage_html, site_url) if homepage_html else []
     if advertised_feeds:
         log.info(f"  Homepage advertises {len(advertised_feeds)} feed(s): {advertised_feeds[0]}"
@@ -2941,7 +2998,7 @@ def run_sites(
 
     def work(item):
         idx, site_url = item
-        diag = {"url": site_url, "domain": urlparse(site_url).netloc, "method": None,
+        diag = {"url": site_url, "domain": _outlet_label(site_url), "method": None,
                 "found": 0, "kept": 0, "seconds": 0.0, "note": ""}
         if deadline and time.monotonic() > deadline:
             diag["status"] = "skipped"

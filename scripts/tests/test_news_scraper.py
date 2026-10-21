@@ -77,6 +77,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, "blocked")
         if site == "siteF":
             return self.site_f(rest)
+        if site == "siteG":
+            return self.site_g(rest)
+        if site == "siteH":
+            return self.site_h(rest)
         return self._send(404, "nope")
 
     # Feed only advertised via <link rel=alternate> at a non-standard path
@@ -129,6 +133,37 @@ class Handler(BaseHTTPRequestHandler):
         if rest in ("/feed", "/feed/"):
             items = [("old-story-slug-that-is-long-enough", "Old story", "Mon, 06 Jan 2020 09:00:00 +0000")]
             return self._send(200, feed(items, b), "application/rss+xml")
+        return self._send(404, "nope")
+
+
+    # Hearst-style: no advertised feed; the homepage links an HTML "RSS" index
+    # page that lists the real section feeds at paths nobody would guess
+    def site_g(self, rest):
+        b = f"{Handler.base}/siteG"
+        if rest == "/":
+            return self._send(200, f'<html><body><a href="{b}/rss/">RSS</a></body></html>')
+        if rest in ("/rss", "/rss/"):
+            return self._send(200, f'<html><body><h1>Feeds</h1><a href="{b}/rss/feed/News-437.php">News</a>'
+                                   f'<a href="{b}/rss/feed/Sports-12.php">Sports</a></body></html>')
+        if rest == "/rss/feed/News-437.php":
+            items = [(f"hearst-story-{i}-with-a-long-enough-slug", f"Hearst story {i}", TODAY_RFC) for i in range(2)]
+            return self._send(200, feed(items, b), "application/rss+xml")
+        return self._send(404, "nope")
+
+    # Only robots.txt knows where the news sitemap is
+    def site_h(self, rest):
+        b = f"{Handler.base}/siteH"
+        slugs = [f"news/{TODAY.strftime('%Y/%m/%d')}/robots-listed-headline-{i}-for-testing" for i in range(2)]
+        if rest == "/":
+            return self._send(200, "<html><body>nothing to see</body></html>")
+        if rest == "/robots.txt":
+            return self._send(200, f"User-agent: *\nSitemap: {b}/arc/outboundfeeds/sitemap-archive/\nSitemap: {b}/custom/news-sitemap-2026.xml\n", "text/plain")
+        if rest == "/custom/news-sitemap-2026.xml":
+            urls = "".join(f"<url><loc>{b}/{s}</loc></url>" for s in slugs)
+            return self._send(200, f'<?xml version="1.0"?><urlset>{urls}</urlset>', "application/xml")
+        for i, s in enumerate(slugs):
+            if rest == "/" + s:
+                return self._send(200, article_page(f"Robots listed headline {i} for testing", TODAY_ISO, s))
         return self._send(404, "nope")
 
 
@@ -197,7 +232,7 @@ class ScraperTests(unittest.TestCase):
     def test_parallel_run_keeps_input_order_and_reports_every_site(self):
         urls = [self.site(n) for n in ("siteA", "siteE", "siteC", "siteD")]
         arts, reports = ns.run_sites(urls, workers=4, target_dates={TODAY_ISO})
-        self.assertEqual([r["domain"] for r in reports], [urlparse(u).netloc for u in urls])
+        self.assertEqual([r["domain"] for r in reports], [ns._outlet_label(u) for u in urls])
         self.assertEqual([r["status"] for r in reports], ["ok", "blocked", "ok", "ok"])
         self.assertEqual(len(arts), 3 + 0 + 3 + 2)
 
@@ -208,6 +243,26 @@ class ScraperTests(unittest.TestCase):
         meta = ns.summarize_run(reports, 1.0)
         self.assertTrue(meta["run"]["budget_hit"])
         self.assertEqual(meta["outlets"]["tried"], 2)
+
+    def test_rss_index_page_is_harvested_for_section_feeds(self):
+        arts, diag = self.run_one("siteG")
+        self.assertEqual(len(arts), 2, diag)
+        self.assertEqual(diag["method"], "rss")
+
+    def test_robots_txt_sitemap_is_used(self):
+        arts, diag = self.run_one("siteH")
+        self.assertEqual(len(arts), 2, diag)
+        self.assertEqual(diag["method"], "sitemap")
+
+    def test_links_survive_a_www_redirect(self):
+        html = '<a href="https://nymag.com/intelligencer/article/a-long-headline-about-the-mayor-race">x</a>'
+        self.assertEqual(len(ns.discover_article_links(html, "https://www.nymag.com")), 1)
+        self.assertTrue(ns.same_site("https://www.nymag.com/", "https://nymag.com/x"))
+        self.assertFalse(ns.same_site("https://www.nymag.com/", "https://www.vulture.com/"))
+
+    def test_outlet_label_keeps_section_paths(self):
+        self.assertEqual(ns._outlet_label("https://www.patch.com/new-york/brooklyn"), "www.patch.com/new-york/brooklyn")
+        self.assertEqual(ns._outlet_label("https://www.ctpost.com/"), "www.ctpost.com")
 
     def test_retry_after_accepts_http_date_and_caps(self):
         class R:
