@@ -1197,14 +1197,32 @@ def _sitemap_entries(xml_text: str, site_url: str) -> list[str]:
             continue
         st = _STAMP_RE.search(block)
         entries.append((st.group(1)[:19] if st else "", href.split("?")[0].rstrip("/")))
-    if any(st for st, _ in entries):
+    stamps = {st for st, _ in entries if st}
+    # Dates are only useful when they vary: liherald's 27,000-entry news
+    # sitemap stamps every URL with the same generation date.
+    if len(stamps) >= 3 and len(stamps) > len(entries) // 100:
         entries.sort(key=lambda e: e[0], reverse=True)   # ISO dates sort lexically
         return [h for _, h in entries]
+    hrefs = [h for _, h in entries]
+    # TownNews/BLOX and similar CMSes end story URLs in a rising numeric id
+    # (/stories/slug,123456 or /article_...-987654.html): newest = largest.
+    ids = [(_trailing_id(h), h) for h in hrefs]
+    if hrefs and sum(1 for i, _ in ids if i is not None) >= 0.8 * len(hrefs):
+        ids.sort(key=lambda e: (e[0] is None, -(e[0] or 0)))
+        return [h for _, h in ids]
     year = datetime.now().year
     hint = re.compile(rf"/({year}|{year - 1})/")
-    recent = [h for _, h in entries if hint.search(h)]
-    rest = [h for _, h in entries if not hint.search(h)]
+    recent = [h for h in hrefs if hint.search(h)]
+    rest = [h for h in hrefs if not hint.search(h)]
     return recent + rest[::-1]
+
+
+_TRAILING_ID_RE = re.compile(r"[,/_-](\d{4,})(?:\.html?|\.php)?/?$", re.I)
+
+
+def _trailing_id(href: str) -> Optional[int]:
+    m = _TRAILING_ID_RE.search(href)
+    return int(m.group(1)) if m else None
 
 
 def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[str]:
@@ -1264,7 +1282,7 @@ def discover_links_from_sitemap(fetcher: "PageFetcher", site_url: str) -> list[s
                 continue
             links = _parse_sitemap(xml_text)
             if links:
-                log.info(f"  Sitemap found at {path} — {len(links)} article links")
+                log.info(f"  Sitemap found at {path} — {len(links)} article links; first: {links[0]}")
                 return list(dict.fromkeys(links))
         except Exception as e:
             log.debug(f"  Sitemap probe failed for {path}: {e}")

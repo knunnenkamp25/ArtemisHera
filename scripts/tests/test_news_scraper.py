@@ -288,6 +288,15 @@ class ScraperTests(unittest.TestCase):
         self.assertTrue(got[0].endswith("fresh-story-with-a-long-enough-slug"))
         self.assertTrue(got[1].endswith("undated-but-later-in-file"))
 
+    def test_sitemap_with_identical_stamps_orders_by_trailing_story_id(self):
+        base = "https://x.com"
+        blocks = "".join(
+            f'<url><loc>{base}/stories/{slug},{sid}</loc><news:news><news:publication_date>2026-10-21T00:00:00Z'
+            f'</news:publication_date></news:news></url>'
+            for slug, sid in (("an-old-story-from-way-back", 1200), ("a-newer-story-slug-here", 98000), ("mid-story-slug-value", 45000)))
+        got = ns._sitemap_entries(f'<urlset xmlns:news="n">{blocks}</urlset>', base)
+        self.assertEqual([ns._trailing_id(h) for h in got], [98000, 45000, 1200])
+
     def test_same_story_from_two_outlets_is_kept_once(self):
         urls = [self.site("siteA"), self.site("siteA")]
         arts, reports = ns.run_sites(urls, workers=2, target_dates={TODAY_ISO})

@@ -64,11 +64,26 @@ WP probe cost 105s before the RSS fallback, nothing bounded a run against the
 | Workflow | Manifest + commit run on failure (project flips to *failed*), push retries after rebase, `dry_run` input uploads an artifact instead of committing |
 | Tests | `python3 scripts/tests/test_news_scraper.py` — local fake-outlet server, no network |
 
-**Unverified against real sites:** cloud sessions cannot push to this repo yet
-(Claude GitHub App not installed), so the cloud dry run has not been made.
-First thing after pushing: dispatch `scrape.yml` on the branch with
-`dry_run=true`, states `CT,NY`, DMA `New York, NY - CT - NJ - PA`, days 7,
-and read the *Outlet coverage* table in the job summary.
+**Verified 2026-10-21 on the runner** (CT + NY outlets in the New York DMA,
+7 days, four dry runs): **28 of 52 outlets produced 454 articles in 2.3
+minutes**, against 2 of 9 outlets and 47 articles in the 8/19 run. The dry
+runs also found and fixed: `www.` aliases dropping every homepage link
+(nymag), RSS index pages that list the real feeds (Hearst), sitemaps only
+named in robots.txt, gzipped sitemaps, archive sitemaps listed oldest-first
+(liherald), and duplicate stories across inventory entries on one host
+(patch.com sections).
+
+**Hard walls that remain (reported as `blocked` on the report page):**
+- *Hearst* (ctpost, newstimes, darientimes, greenwichtime, stamfordadvocate,
+  wiltonbulletin) serves a 2 KB bot-challenge page to datacenter IPs on every
+  URL, sitemaps and article pages included.
+- *Newspack-hosted* (ctmirror, ctnewsjunkie, amsterdamnews, thecity.nyc)
+  answer 403 to every request from GitHub runners within a second; they
+  produced in August. bizjournals likewise.
+Both are IP-range screening, not something a header fixes. Options: run those
+outlets from a residential connection (`scripts/news_scraper.py` works
+locally with the same flags), or a browser-impersonating transport
+(curl_cffi) as a future experiment.
 
 ---
 
@@ -145,8 +160,7 @@ names internal next steps:
       isolation). Fixed in c1bce76; coverage fixes shipped 2026-09-09. The
       workflow runs whatever is on main, so push before re-running. Use
       "Re-run Scrape" on the failed project — the parameters were saved
-- [ ] **Install the Claude GitHub App on this repo** — cloud sessions can read
-      but not push (`403` from the git proxy and from the API), so every change
-      has to be pushed by hand
+- [x] **Install the Claude GitHub App on this repo** — done 2026-10-21; cloud
+      sessions push directly now
 - [ ] **LegiScan** — survey submitted; would fill pre-2017 history and the Texas
       gap (Open States publishes no recent Texas floor votes)
